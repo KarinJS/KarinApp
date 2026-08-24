@@ -6,11 +6,10 @@ import com.facebook.react.bridge.ReactContextBaseJavaModule
 import com.facebook.react.bridge.ReactMethod
 import java.io.File
 import java.io.FileOutputStream
-import android.system.Os
-import android.util.Log
 import org.apache.commons.compress.archivers.tar.TarArchiveInputStream
 import org.tukaani.xz.XZInputStream
 
+/** proot 容器进程管理：负责 debian 容器根文件系统解压与容器进程的启停。 */
 class ProotModule(private val context: ReactApplicationContext) : ReactContextBaseJavaModule(context) {
   private var process: Process? = null
   override fun getName() = "KarinProot"
@@ -32,9 +31,13 @@ class ProotModule(private val context: ReactApplicationContext) : ReactContextBa
       val loaderFile = File(nativeDir, "libproot-loader.so")
       if (!prootFile.exists()) throw IllegalStateException("安装包中缺少 proot 主程序")
       if (!loaderFile.exists()) throw IllegalStateException("安装包中缺少 proot loader")
-      // A shell without a TTY/input stream exits immediately on Android (EOF),
-      // which made the UI report success for a container that was already dead.
-      // Keep the proot session alive until stop() explicitly destroys it.
+      val depDir = File(context.filesDir, "proot-libs").apply { mkdirs() }
+      val tallocV2 = File(depDir, "libtalloc.so.2")
+      if (!tallocV2.exists()) {
+        File(nativeDir, "libtalloc.so").inputStream().use { i ->
+          FileOutputStream(tallocV2).use { o -> i.copyTo(o) }
+        }
+      }
       process = ProcessBuilder(
         prootFile.absolutePath,
         "-r", root.absolutePath,
@@ -42,7 +45,10 @@ class ProotModule(private val context: ReactApplicationContext) : ReactContextBa
       )
         .apply {
           environment()["PROOT_LOADER"] = loaderFile.absolutePath
-          environment()["LD_LIBRARY_PATH"] = nativeDir
+          environment()["PROOT_TMP_DIR"] = File(context.cacheDir, "proot-tmp").absolutePath.also { File(it).mkdirs() }
+          environment()["LD_LIBRARY_PATH"] = "$nativeDir:${depDir.absolutePath}"
+          environment()["PROOT_NO_SECCOMP"] = "1"
+          environment()["PATH"] = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
         }
         .redirectErrorStream(true).start()
       val startedProcess = process!!
@@ -51,11 +57,8 @@ class ProotModule(private val context: ReactApplicationContext) : ReactContextBa
         throw IllegalStateException("proot 进程启动后立即退出")
       }
       Thread {
-        startedProcess.inputStream.bufferedReader().useLines { lines ->
-          lines.forEach { line -> Log.i("KarinProot", line) }
-        }
-        val code = startedProcess.waitFor()
-        Log.e("KarinProot", "proot exited with code $code")
+        try { startedProcess.inputStream.bufferedReader().useLines { it.forEach { _ -> } } } catch (_: Exception) {}
+        startedProcess.waitFor()
         synchronized(this) { if (process === startedProcess) process = null }
       }.apply { name = "karin-proot-output"; isDaemon = true }.start()
       promise.resolve("running")
