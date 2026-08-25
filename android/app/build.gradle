@@ -121,6 +121,31 @@ tasks.register("packageProotLoader", Copy) {
 }
 preBuild.dependsOn("packageProotLoader")
 
+// karin-ipc: static arm64 daemon that executes commands inside the proot guest.
+// Built from src/main/cpp/karin-ipc.c with the NDK, packaged like a JNI library.
+tasks.register("buildIpcDaemon") {
+    def src = file("src/main/cpp/karin-ipc.c")
+    def out = file("src/main/jniLibs/arm64-v8a/libkarin_ipc.so")
+    inputs.file(src)
+    outputs.file(out)
+    doLast {
+        def os = System.getProperty("os.name").toLowerCase()
+        def prebuilt = os.contains("windows") ? "windows-x86_64"
+                : os.contains("mac") ? (System.getProperty("os.arch").contains("aarch64") ? "darwin-aarch64" : "darwin-x86_64")
+                : (System.getProperty("os.arch").contains("aarch64") ? "linux-aarch64" : "linux-x86_64")
+        def ext = os.contains("windows") ? ".cmd" : ""
+        def ndkRoot = System.getenv("ANDROID_NDK_HOME") ?: file("${System.getenv("ANDROID_HOME")}/ndk/${rootProject.ext.ndkVersion}")
+        def clang = file("${ndkRoot}/toolchains/llvm/prebuilt/${prebuilt}/bin/aarch64-linux-android21-clang${ext}")
+        if (!clang.isFile()) throw new GradleException("找不到 NDK clang: ${clang}")
+        out.parentFile.mkdirs()
+        def result = project.providers.exec {
+            commandLine clang, "-static", "-O2", "-Wall", "-Wextra", "-o", out, src
+        }.result.get()
+        if (result.exitValue != 0) throw new GradleException("karin-ipc 编译失败（退出码 ${result.exitValue}）")
+    }
+}
+preBuild.dependsOn("buildIpcDaemon")
+
 dependencies {
     // The version of react-native is set by the React Native Gradle Plugin
     implementation("com.facebook.react:react-android")
