@@ -28,8 +28,12 @@ export const prootController = {
   },
 };
 
-function clipText(text: string, limit: number): string {
-  return text.length > limit ? `${text.slice(0, limit)}…` : text;
+const ERROR_TAIL_LINES = 40;
+const ERROR_TAIL_CHARS = 1200;
+
+function clipTail(text: string, maxLines: number, maxChars: number): string {
+  const tail = text.trim().split('\n').slice(-maxLines).join('\n');
+  return tail.length > maxChars ? '…' + tail.slice(-maxChars) : tail;
 }
 
 const DEFAULT_TIMEOUT_MS = 60_000;
@@ -65,7 +69,7 @@ export function executeStreaming(
       if (event.stream === 'exit') {
         finish(() => {
           if (event.exitCode === 0) resolve(state.output.trim());
-          else reject(new Error(`命令退出码 ${event.exitCode}${state.output.trim() ? `\n${clipText(state.output.trim(), 500)}` : ''}`));
+          else reject(new Error(`命令退出码 ${event.exitCode}${state.output.trim() ? `\n${clipTail(state.output, ERROR_TAIL_LINES, ERROR_TAIL_CHARS)}` : ''}`));
         });
       }
     });

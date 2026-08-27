@@ -29,7 +29,7 @@ const NPM_INSTALL_COMMAND = 'npm install -g npm@latest';
 const PNPM_INSTALL_COMMAND = 'npm install -g pnpm@9';
 const KARIN_PREPARE_COMMAND = [
   'mkdir -p /root/karin',
-  'test -f /root/karin/node_modules/node-karin/package.json || (cd /root/karin && pnpm i node-karin@latest && npx node-karin init)',
+  'test -f /root/karin/node_modules/node-karin/package.json || (cd /root/karin && if test -f pnpm-workspace.yaml; then pnpm -w i node-karin@latest; else pnpm i node-karin@latest; fi && npx node-karin init)',
 ].join(' && ');
 
 export async function inspectEnvironment(): Promise<InstalledVersions> {
@@ -50,16 +50,13 @@ export async function inspectEnvironment(): Promise<InstalledVersions> {
   return {node, npm, pnpm, karin};
 }
 
-const clipLogLine = (line: string) => (line.length > 180 ? `${line.slice(0, 180)}…` : line);
-
 async function runStreaming(command: string, onLog: LogHandler, timeoutMs: number) {
   onLog(`$ ${command}`);
   await executeStreaming(
     command,
     line => {
-      const clipped = clipLogLine(line);
-      if (clipped.trim()) {
-        onLog(clipped);
+      if (line.trim()) {
+        onLog(line);
       }
     },
     timeoutMs,
@@ -116,6 +113,7 @@ export async function installEnvironment({onPhase, onLog}: EnvironmentInstallHan
   current = await ensureNode(current, onPhase, onLog);
   current = await ensureNpm(current, onPhase, onLog);
   await ensurePnpm(current, onPhase, onLog);
+  const KarinV = await executeAndCollect(`node -e "const fs = require('fs'); const path = '/sdcard/Download/test.txt';fs.ex"`, PROBE_TIMEOUT_MS)
   await prepareKarin(onPhase, onLog);
   const final = await inspectEnvironment();
   onLog(`Node.js ${final.node || '-'} / npm ${final.npm || '-'} / pnpm ${final.pnpm || '-'} / node-karin ${final.karin || '-'}`);

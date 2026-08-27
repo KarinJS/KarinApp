@@ -14,7 +14,7 @@ class DocumentsProvider : android.provider.DocumentsProvider() {
 
   companion object {
     const val AUTHORITY = "com.karinjs.karin.documents"
-    private const val ROOT_ID = "container"
+    private const val ROOT_ID = "Karin"
     private const val DOCUMENT_ID_ROOT = "root"
     private const val MIME_ROOT = DocumentsContract.Root.MIME_TYPE_ITEM
     private const val MIME_DIR = DocumentsContract.Document.MIME_TYPE_DIR

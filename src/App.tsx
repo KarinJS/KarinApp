@@ -14,7 +14,8 @@ import DashboardScreen from './screens/DashboardScreen';
 import PluginsScreen from './screens/PluginsScreen';
 import SettingsScreen from './screens/SettingsScreen';
 import {prootController} from './services/prootController';
-import {runStartupTasks} from './startup/startupTasks';
+import {openLogLocation, saveStartupLog} from './services/logService';
+import {getStartupLog, runStartupTasks} from './startup/startupTasks';
 import type {StartupProgress} from './startup/startupTasks';
 import {useAppColors} from './theme/colors';
 import type {Tab} from './types';
@@ -42,6 +43,7 @@ export default function App() {
   const [startup, setStartup] = useState<StartupProgress>(INITIAL_STARTUP);
   const [startupDone, setStartupDone] = useState(false);
   const [startupError, setStartupError] = useState('');
+  const [startupLogPath, setStartupLogPath] = useState('');
   const [activeTab, setActiveTab] = useState<Tab>('控制台');
   const [restartOpen, setRestartOpen] = useState(false);
   const [karinVersion, setKarinVersion] = useState('1.0.0');
@@ -51,16 +53,31 @@ export default function App() {
 
   const boot = () => {
     setStartupError('');
+    setStartupLogPath('');
     setStartupDone(false);
     runStartupTasks(setStartup)
       .then(async () => {
         setContainerState('running');
         setStartupDone(true);
       })
-      .catch(error => setStartupError(error instanceof Error ? error.message : '启动准备失败'));
+      .catch(error => {
+        const message = error instanceof Error ? error.message : '启动准备失败';
+        setStartupError(message);
+        const fullLog = `${getStartupLog()}\n[失败] ${message}`;
+        saveStartupLog(fullLog)
+          .then(path => setStartupLogPath(path))
+          .catch(() => setStartupLogPath(''));
+      });
+  };
+  const handleOpenLogLocation = async () => {
+    try {
+      const opened = await openLogLocation();
+      if (!opened) showNotice('无法打开日志文件位置');
+    } catch {
+      showNotice('无法打开日志文件位置');
+    }
   };
 
-  // ֻ�ڹ���ʱ����һ�Σ�boot �ڲ������Զ��� hook �� setter�������޷��ж����ȶ���
   useEffect(() => {
     boot();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -117,7 +134,14 @@ export default function App() {
         <StatusBar barStyle={dark ? 'light-content' : 'dark-content'} />
 
         {!startupDone ? (
-          <StartupScreen colors={colors} progress={startup} error={startupError} onRetry={boot} />
+          <StartupScreen
+            colors={colors}
+            progress={startup}
+            error={startupError}
+            logPath={startupLogPath}
+            onRetry={boot}
+            onOpenLog={handleOpenLogLocation}
+          />
         ) : (
           <View style={styles.screen}>
             <View style={styles.header}>

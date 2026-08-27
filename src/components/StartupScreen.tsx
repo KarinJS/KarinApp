@@ -9,7 +9,9 @@ type Props = {
   colors: Colors;
   progress: StartupProgress;
   error: string;
+  logPath: string;
   onRetry: () => void;
+  onOpenLog: () => void;
 };
 
 const STEPS: {stage: StartupStage; label: string; detail: string}[] = [
@@ -18,7 +20,7 @@ const STEPS: {stage: StartupStage; label: string; detail: string}[] = [
   {stage: 'environment', label: '检查运行环境', detail: '准备 Node.js、npm、pnpm 与 Karin'},
 ];
 
-export default function StartupScreen({colors, progress, error, onRetry}: Props) {
+export default function StartupScreen({colors, progress, error, logPath, onRetry, onOpenLog}: Props) {
   const percent = Math.round(progress.progress * 100);
   const activeIndex = STEPS.findIndex(item => item.stage === progress.stage);
   const logs = progress.logs.slice(-4);
@@ -82,11 +84,13 @@ export default function StartupScreen({colors, progress, error, onRetry}: Props)
         />
       </View>
       <View style={styles.statusRow}>
-        <Text style={[styles.message, {color: colors.text}]}>{error || progress.message}</Text>
+        <Text numberOfLines={2} style={[styles.message, {color: colors.text}]}>
+          {logPath ? '启动失败，完整日志已保存' : error || progress.message}
+        </Text>
         <Text style={[styles.percent, {color: colors.accent}]}>{error ? '!' : `${percent}%`}</Text>
       </View>
 
-      {logs.length > 0 ? (
+      {error && logPath ? null : logs.length > 0 ? (
         <View style={[styles.log, {backgroundColor: colors.neutralSoft, borderColor: colors.border}]}>
           <Text style={[styles.logTitle, {color: colors.muted}]}>安装日志</Text>
           {logs.map((line, index) => (
@@ -100,9 +104,23 @@ export default function StartupScreen({colors, progress, error, onRetry}: Props)
       ) : null}
 
       {error ? (
-        <Pressable onPress={onRetry} style={[styles.retryButton, {backgroundColor: colors.accent}]}>
-          <Text style={primaryTextStyle}>重试</Text>
-        </Pressable>
+        <>
+          <Pressable onPress={onRetry} style={[styles.retryButton, {backgroundColor: colors.accent}]}>
+            <Text style={primaryTextStyle}>重试</Text>
+          </Pressable>
+          {logPath ? (
+            <View style={styles.logSaveBox}>
+              <Text numberOfLines={2} style={[styles.logPath, {color: colors.muted}]}>
+                完整日志已保存：{logPath}
+              </Text>
+              <Pressable
+                onPress={onOpenLog}
+                style={[styles.openLogButton, {borderColor: colors.border, backgroundColor: colors.surface}]}>
+                <Text style={[styles.openLogText, {color: colors.text}]}>打开文件保存位置</Text>
+              </Pressable>
+            </View>
+          ) : null}
+        </>
       ) : null}
     </View>
   );
@@ -124,11 +142,15 @@ const styles = StyleSheet.create({
   progressTrack: {width: '100%', height: 5, borderRadius: 3, overflow: 'hidden', marginTop: 28},
   progressFill: {height: '100%', borderRadius: 3},
   statusRow: {width: '100%', flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 13},
-  message: {fontSize: 13, fontWeight: '700'},
+  message: {flex: 1, marginRight: 8, fontSize: 13, fontWeight: '700'},
   percent: {fontSize: 12, fontWeight: '800'},
   hint: {fontSize: 11, marginTop: 11, alignSelf: 'flex-start'},
   log: {width: '100%', marginTop: 11, borderRadius: 9, borderWidth: 1, padding: 10, gap: 3},
   logTitle: {fontSize: 9, fontWeight: '700', marginBottom: 2, opacity: 0.85},
   logLine: {fontSize: 10, lineHeight: 14, fontVariant: ['tabular-nums']},
   retryButton: {minWidth: 92, minHeight: 40, borderRadius: 10, alignItems: 'center', justifyContent: 'center', marginTop: 20},
+  logSaveBox: {width: '100%', alignItems: 'center', marginTop: 14},
+  logPath: {fontSize: 10, textAlign: 'center', marginBottom: 10},
+  openLogButton: {minWidth: 140, minHeight: 38, borderRadius: 10, borderWidth: 1, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 16},
+  openLogText: {fontSize: 12, fontWeight: '700'},
 });
