@@ -123,6 +123,7 @@ preBuild.dependsOn("packageProotLoader")
 
 // karin-ipc: static arm64 daemon that executes commands inside the proot guest.
 // Built from src/main/cpp/karin-ipc.c with the NDK, packaged like a JNI library.
+// -fno-emulated-tls: bionic loader under proot requires the static ELF PT_TLS to be 64-byte aligned.
 tasks.register("buildIpcDaemon") {
     def src = file("src/main/cpp/karin-ipc.c")
     def out = file("src/main/jniLibs/arm64-v8a/libkarin_ipc.so")
@@ -139,7 +140,7 @@ tasks.register("buildIpcDaemon") {
         if (!clang.isFile()) throw new GradleException("找不到 NDK clang: ${clang}")
         out.parentFile.mkdirs()
         def result = project.providers.exec {
-            commandLine clang, "-static", "-O2", "-Wall", "-Wextra", "-o", out, src
+            commandLine clang, "-static", "-fno-emulated-tls", "-O2", "-Wall", "-Wextra", "-o", out, src
         }.result.get()
         if (result.exitValue != 0) throw new GradleException("karin-ipc 编译失败（退出码 ${result.exitValue}）")
     }

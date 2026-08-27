@@ -1,4 +1,4 @@
-import {DeviceEventEmitter, NativeModules, EmitterSubscription} from 'react-native';
+import {DeviceEventEmitter, EventSubscription, NativeModules, } from 'react-native';
 
 export type ProotCommandEvent = {
   commandId: string;
@@ -23,7 +23,7 @@ export const prootController = {
   status: () => native.status(),
   execute: (command: string, commandId = `${Date.now()}`) => native.execute(command, commandId),
   kill: (commandId: string) => native.kill(commandId),
-  subscribe(listener: (event: ProotCommandEvent) => void): EmitterSubscription {
+  subscribe(listener: (event: ProotCommandEvent) => void): EventSubscription {
     return DeviceEventEmitter.addListener('KarinProotCommand', listener);
   },
 };
@@ -46,7 +46,7 @@ export function executeStreaming(
       output: '',
       settled: false,
       timer: undefined as ReturnType<typeof setTimeout> | undefined,
-      subscription: undefined as EmitterSubscription | undefined,
+      subscription: undefined as EventSubscription | undefined,
     };
     const finish = (callback: () => void) => {
       if (state.settled) return;

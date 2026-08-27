@@ -1,13 +1,38 @@
 import {executeAndCollect, executeStreaming} from './prootController';
 
 export type EnvironmentVersions = {node: string[]; npm: string[]; pnpm: string[]; karin: string[]};
-const jsonVersions = (value: string) => JSON.parse(value) as string[];
+
+export type EnvironmentInstallHandlers = {
+  onPhase: (phase: string) => void;
+  onLog: (line: string) => void;
+};
+
+type InstalledVersions = {node: string; npm: string; pnpm: string; karin: string};
+type PhaseHandler = (phase: string) => void;
+type LogHandler = (line: string) => void;
 
 const PROBE_TIMEOUT_MS = 6_000;
 const INSTALL_STEP_TIMEOUT_MS = 15 * 60 * 1000;
 const PACKAGE_STEP_TIMEOUT_MS = 5 * 60 * 1000;
 
-export async function inspectEnvironment() {
+const NODE_TARGET_MAJOR = 24;
+const PNPM_TARGET_PREFIX = '9.';
+
+const NODE_INSTALL_COMMAND = [
+  'apt-get update',
+  'apt-get install -y curl xz-utils',
+  'curl -fsSL https://nodejs.org/dist/v24.0.0/node-v24.0.0-linux-arm64.tar.xz -o /tmp/node.tar.xz',
+  'tar -xJf /tmp/node.tar.xz -C /usr/local --strip-components=1',
+  'rm -f /tmp/node.tar.xz',
+].join(' && ');
+const NPM_INSTALL_COMMAND = 'npm install -g npm@latest';
+const PNPM_INSTALL_COMMAND = 'npm install -g pnpm@9';
+const KARIN_PREPARE_COMMAND = [
+  'mkdir -p /root/karin',
+  'test -f /root/karin/node_modules/node-karin/package.json || (cd /root/karin && pnpm i node-karin@latest && npx node-karin init)',
+].join(' && ');
+
+export async function inspectEnvironment(): Promise<InstalledVersions> {
   const probe = async (command: string) => {
     try {
       const output = await executeAndCollect(command, PROBE_TIMEOUT_MS);
@@ -25,63 +50,73 @@ export async function inspectEnvironment() {
   return {node, npm, pnpm, karin};
 }
 
-
-export async function fetchEnvironmentVersions(): Promise<EnvironmentVersions> {
-  const [node, npm, pnpm, karin] = await Promise.all([
-    executeAndCollect("printf '%s' '[\"22.11.0\",\"20.18.0\",\"18.20.4\"]'"), executeAndCollect("npm view npm versions --json"),
-    executeAndCollect("npm view pnpm versions --json"), executeAndCollect("npm view node-karin versions --json"),
-  ]);
-  return {node: jsonVersions(node).filter(value => Number(value.split('.')[0]) >= 18).reverse(), npm: jsonVersions(npm).reverse(), pnpm: jsonVersions(pnpm).reverse(), karin: jsonVersions(karin).reverse()};
-}
-
-export type EnvironmentInstallHandlers = {
-  onPhase: (phase: string) => void;
-  onLog: (line: string) => void;
-};
-
 const clipLogLine = (line: string) => (line.length > 180 ? `${line.slice(0, 180)}…` : line);
 
-async function runStreaming(command: string, onLog: (line: string) => void, timeoutMs: number) {
+async function runStreaming(command: string, onLog: LogHandler, timeoutMs: number) {
   onLog(`$ ${command}`);
-  await executeStreaming(command, line => {
-    const clipped = clipLogLine(line);
-    if (clipped.trim()) onLog(clipped);
-  }, timeoutMs);
+  await executeStreaming(
+    command,
+    line => {
+      const clipped = clipLogLine(line);
+      if (clipped.trim()) {
+        onLog(clipped);
+      }
+    },
+    timeoutMs,
+  );
+}
+
+const nodeMajor = (version: string) => Number(version.split('.')[0]);
+
+/** 检查 Node.js；缺失或低于目标版本时自动安装，并返回刷新后的环境信息。 */
+async function ensureNode(current: InstalledVersions, onPhase: PhaseHandler, onLog: LogHandler): Promise<InstalledVersions> {
+  if (current.node && nodeMajor(current.node) >= NODE_TARGET_MAJOR) {
+    onLog(`node --version -> v${current.node}`);
+    return current;
+  }
+  onPhase(`正在安装 Node.js (v${NODE_TARGET_MAJOR}.0.0)`);
+  await runStreaming(NODE_INSTALL_COMMAND, onLog, INSTALL_STEP_TIMEOUT_MS);
+  onPhase('Node.js 安装完成');
+  return inspectEnvironment();
+}
+
+/** 检查 npm；缺失时自动安装，并返回刷新后的环境信息。 */
+async function ensureNpm(current: InstalledVersions, onPhase: PhaseHandler, onLog: LogHandler): Promise<InstalledVersions> {
+  if (current.npm) {
+    onLog(`npm --version -> ${current.npm}`);
+    return current;
+  }
+  onPhase('正在安装 npm');
+  await runStreaming(NPM_INSTALL_COMMAND, onLog, PACKAGE_STEP_TIMEOUT_MS);
+  onPhase('npm 安装完成');
+  return inspectEnvironment();
+}
+
+/** 检查 pnpm；缺失或不是目标大版本时自动安装。 */
+async function ensurePnpm(current: InstalledVersions, onPhase: PhaseHandler, onLog: LogHandler): Promise<InstalledVersions> {
+  if (current.pnpm && current.pnpm.startsWith(PNPM_TARGET_PREFIX)) {
+    onLog(`pnpm --version -> ${current.pnpm}`);
+    return current;
+  }
+  onPhase('正在安装 pnpm');
+  await runStreaming(PNPM_INSTALL_COMMAND, onLog, PACKAGE_STEP_TIMEOUT_MS);
+  onPhase('pnpm 安装完成');
+  return current;
+}
+
+/** 准备 /root/karin 目录与 node-karin 运行时。 */
+async function prepareKarin(onPhase: PhaseHandler, onLog: LogHandler) {
+  onPhase('正在准备 Karin');
+  await runStreaming(KARIN_PREPARE_COMMAND, onLog, PACKAGE_STEP_TIMEOUT_MS);
+  onPhase('运行环境准备完成');
 }
 
 export async function installEnvironment({onPhase, onLog}: EnvironmentInstallHandlers) {
-  onPhase('正在检查 Node.js');
   let current = await inspectEnvironment();
-
-  if (current.node && Number(current.node.split('.')[0]) >= 24) {
-    onLog(`node --version -> v${current.node}`);
-  } else {
-    onPhase('正在安装 Node.js (v24.0.0)');
-    await runStreaming('apt-get update && apt-get install -y curl xz-utils && curl -fsSL https://nodejs.org/dist/v24.0.0/node-v24.0.0-linux-arm64.tar.xz -o /tmp/node.tar.xz && tar -xJf /tmp/node.tar.xz -C /usr/local --strip-components=1 && rm -f /tmp/node.tar.xz', onLog, INSTALL_STEP_TIMEOUT_MS);
-    onPhase('Node.js 安装完成');
-    current = await inspectEnvironment();
-  }
-
-  if (current.npm) {
-    onLog(`npm --version -> ${current.npm}`);
-  } else {
-    onPhase('正在安装 npm');
-    await runStreaming('npm install -g npm@latest', onLog, PACKAGE_STEP_TIMEOUT_MS);
-    onPhase('npm 安装完成');
-    current = await inspectEnvironment();
-  }
-
-  if (current.pnpm && current.pnpm.startsWith('9.')) {
-    onLog(`pnpm --version -> ${current.pnpm}`);
-  } else {
-    onPhase('正在安装 pnpm');
-    await runStreaming('npm install -g pnpm@9', onLog, PACKAGE_STEP_TIMEOUT_MS);
-    onPhase('pnpm 安装完成');
-  }
-
-  onPhase('正在准备 Karin');
-  await runStreaming('mkdir -p /root/karin && test -f /root/karin/node_modules/node-karin/package.json || (cd /root/karin && pnpm i node-karin@latest && pnpm exec karin init)', onLog, PACKAGE_STEP_TIMEOUT_MS);
-  onPhase('运行环境准备完成');
+  current = await ensureNode(current, onPhase, onLog);
+  current = await ensureNpm(current, onPhase, onLog);
+  await ensurePnpm(current, onPhase, onLog);
+  await prepareKarin(onPhase, onLog);
   const final = await inspectEnvironment();
   onLog(`Node.js ${final.node || '-'} / npm ${final.npm || '-'} / pnpm ${final.pnpm || '-'} / node-karin ${final.karin || '-'}`);
 }

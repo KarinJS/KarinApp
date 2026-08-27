@@ -36,11 +36,11 @@ export async function runStartupTasks(onProgress: (progress: StartupProgress) =>
     onProgress({stage, message, progress, logs: [...logs]});
   };
 
-  emit('container', '正在准备 proot 容器', 0.12);
+  emit('container', '正在初始化容器', 0.12);
   await proot.initialize();
   emit('container', '容器初始化完成', 0.68);
 
-  emit('proot', '正在启动 proot 容器', 0.78);
+  emit('proot', '正在启动容器', 0.78);
   await proot.start();
 
   emit('environment', '正在检查运行环境', 0.84);

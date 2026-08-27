@@ -1,4 +1,21 @@
 This is a new [**React Native**](https://reactnative.dev) project, bootstrapped using [`@react-native-community/cli`](https://github.com/react-native-community/cli).
+# Project Structure
+
+The app source lives under `src/`:
+
+```
+src/
+  App.tsx           Composition root: providers, global state, boot flow, modals
+  components/       Reusable UI: StartupScreen, BottomNav, Toast, dialogs
+  screens/          Tab screens: DashboardScreen, PluginsScreen, SettingsScreen
+  hooks/            Shared state hooks: container status, Karin runtime, toast
+  services/         Native/proot boundaries: prootController, environmentService
+  startup/          Boot pipeline shown behind the splash screen
+  theme/            Light/dark color palettes and shared styles
+  constants/        Tab navigation configuration
+  types/            Shared domain types (Tab, ContainerState)
+```
+
 
 # Getting Started
 

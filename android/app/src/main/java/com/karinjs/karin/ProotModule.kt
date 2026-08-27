@@ -59,6 +59,8 @@ class ProotModule(private val context: ReactApplicationContext) : ReactContextBa
       keeperProcess = started
       keeperWriter = DataOutputStream(BufferedOutputStream(started.outputStream))
       drainKeeper(started, ready)
+      val stderrLog = StringBuffer()
+      drainDaemonStderr(started, stderrLog)
       if (!ready.await(15, TimeUnit.SECONDS)) {
         terminate(started)
         synchronized(lock) {
@@ -67,7 +69,7 @@ class ProotModule(private val context: ReactApplicationContext) : ReactContextBa
             keeperWriter = null
           }
         }
-        throw IllegalStateException("容器守护进程启动超时")
+        throw IllegalStateException("容器守护进程启动超时${detail(stderrLog.toString().trim())}")
       }
       "running"
     }
@@ -157,6 +159,17 @@ class ProotModule(private val context: ReactApplicationContext) : ReactContextBa
         }
       }
     }.apply { name = "karin-proot-keeper"; isDaemon = true }.start()
+  }
+
+  /** 持续读取守护进程 stderr，供启动失败时输出诊断（正常运行时内容为空）。 */
+  private fun drainDaemonStderr(process: Process, buffer: StringBuffer) {
+    Thread {
+      try {
+        process.errorStream.bufferedReader().forEachLine { line -> if (buffer.length < MAX_DAEMON_STDERR) buffer.append(line).append('\n') }
+      } catch (_: Exception) {
+        // EOF 或读取失败：守护进程已退出
+      }
+    }.apply { name = "karin-proot-stderr"; isDaemon = true }.start()
   }
 
   private fun dispatchFrame(payload: ByteArray, ready: CountDownLatch) {
@@ -431,6 +444,7 @@ class ProotModule(private val context: ReactApplicationContext) : ReactContextBa
     private const val STREAM_STDERR = 2
     private const val MAX_FRAME = 8 * 1024 * 1024
     private const val MAX_COMMAND = 1024 * 1024
+    private const val MAX_DAEMON_STDERR = 4096
     private val extractLock = Any()
     @Volatile private var hardlinkSupport: Boolean? = null
   }

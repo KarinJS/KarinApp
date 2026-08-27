@@ -66,6 +66,10 @@ static volatile sig_atomic_t g_quit = 0;
 static unsigned char g_req_buf[MAX_REQUEST + READ_CHUNK + 8];
 static size_t g_req_len = 0;
 
+/* proot's bionic-based loader aborts static ARM64 executables whose PT_TLS
+ * segment alignment is below 64 bytes; this forces the linker to emit p_align 64. */
+static _Thread_local unsigned char karin_tls_padding[64] __attribute__((used, aligned(64)));
+
 static void handle_signal(int sig) {
   (void)sig;
   g_quit = 1;
