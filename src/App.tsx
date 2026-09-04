@@ -14,6 +14,7 @@ import DashboardScreen from './screens/DashboardScreen';
 import PluginsScreen from './screens/PluginsScreen';
 import SettingsScreen from './screens/SettingsScreen';
 import {prootController} from './services/prootController';
+import {inspectEnvironment, switchKarinVersion} from './services/environmentService';
 import {openLogLocation, saveStartupLog} from './services/logService';
 import {getStartupLog, runStartupTasks} from './startup/startupTasks';
 import type {StartupProgress} from './startup/startupTasks';
@@ -26,8 +27,6 @@ const INITIAL_STARTUP: StartupProgress = {
   progress: 0,
   logs: [],
 };
-
-const VERSIONS = ['latest'];
 
 export default function App() {
   const {colors, dark} = useAppColors();
@@ -46,10 +45,15 @@ export default function App() {
   const [startupLogPath, setStartupLogPath] = useState('');
   const [activeTab, setActiveTab] = useState<Tab>('控制台');
   const [restartOpen, setRestartOpen] = useState(false);
-  const [karinVersion, setKarinVersion] = useState('1.0.0');
+  const [karinVersion, setKarinVersion] = useState('');
   const [versionOpen, setVersionOpen] = useState(false);
-  const [selectedVersion, setSelectedVersion] = useState('1.0.0');
+  const [versionBusy, setVersionBusy] = useState(false);
   const [containerBusy, setContainerBusy] = useState(false);
+
+  const refreshKarinVersion = () =>
+    inspectEnvironment()
+      .then(env => setKarinVersion(env.karin))
+      .catch(() => {});
 
   const boot = () => {
     setStartupError('');
@@ -59,6 +63,7 @@ export default function App() {
       .then(async () => {
         setContainerState('running');
         setStartupDone(true);
+        refreshKarinVersion();
       })
       .catch(error => {
         const message = error instanceof Error ? error.message : '启动准备失败';
@@ -112,15 +117,21 @@ export default function App() {
     showNotice(next ? '正在启动 Karin（占位）' : '正在停止 Karin（占位）');
   };
 
-  const openVersionSheet = () => {
-    setSelectedVersion(karinVersion);
-    setVersionOpen(true);
-  };
-
-  const handleVersionConfirm = () => {
-    setKarinVersion(selectedVersion);
-    setVersionOpen(false);
-    showNotice('版本已更新（占位）');
+  const handleVersionConfirm = async (version: string) => {
+    if (versionBusy) {
+      return;
+    }
+    setVersionBusy(true);
+    try {
+      await switchKarinVersion(version, () => {});
+      setKarinVersion(version);
+      setVersionOpen(false);
+      showNotice(`Karin 已切换到 v${version}`);
+    } catch (error) {
+      showNotice(`版本切换失败: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      setVersionBusy(false);
+    }
   };
 
   const powerButtonStyle = {
@@ -174,12 +185,10 @@ export default function App() {
                   colors={colors}
                   karinRunning={karinRunning}
                   karinSeconds={karinSeconds}
-                  karinVersion={karinVersion}
-                  onVersionPress={openVersionSheet}
                   onAction={showNotice}
                 />
               ) : activeTab === '设置' ? (
-                <SettingsScreen colors={colors} version={karinVersion} onOpen={openVersionSheet} />
+                <SettingsScreen colors={colors} version={karinVersion} onOpen={() => setVersionOpen(true)} />
               ) : (
                 <PluginsScreen colors={colors} />
               )}
@@ -213,10 +222,9 @@ export default function App() {
         />
         <VersionSheet
           visible={versionOpen}
-          versions={VERSIONS}
-          selectedVersion={selectedVersion}
+          installedVersion={karinVersion}
+          busy={versionBusy}
           colors={colors}
-          onSelect={setSelectedVersion}
           onConfirm={handleVersionConfirm}
           onClose={() => setVersionOpen(false)}
         />

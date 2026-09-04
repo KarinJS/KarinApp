@@ -1,25 +1,16 @@
 import React from 'react';
 import {Pressable, ScrollView, StyleSheet, Text, View} from 'react-native';
-import {ChevronRight, Cpu, FolderOpen, MemoryStick, Terminal as TerminalIcon} from 'lucide-react-native';
+import {Cpu, FolderOpen, MemoryStick, Terminal as TerminalIcon} from 'lucide-react-native';
 import {Colors} from '../theme/colors';
 
 type Props = {
   colors: Colors;
   karinRunning: boolean;
   karinSeconds: number;
-  karinVersion: string;
-  onVersionPress: () => void;
   onAction: (message: string) => void;
 };
 
-export default function DashboardScreen({
-  colors,
-  karinRunning,
-  karinSeconds,
-  karinVersion,
-  onVersionPress,
-  onAction,
-}: Props) {
+export default function DashboardScreen({colors, karinRunning, karinSeconds, onAction}: Props) {
   return (
     <ScrollView contentContainerStyle={styles.dashboard}>
       <View style={[styles.statusRow, {backgroundColor: colors.surface, borderColor: colors.border}]}>
@@ -53,14 +44,6 @@ export default function DashboardScreen({
           colors={colors}
         />
       </View>
-
-      <Pressable onPress={onVersionPress} style={[styles.versionRow, {borderBottomColor: colors.border}]}>
-        <Text style={[styles.infoLabel, {color: colors.muted}]}>Karin 运行版本</Text>
-        <View style={styles.versionRowRight}>
-          <Text style={[styles.versionRowValue, {color: colors.text}]}>{karinVersion}</Text>
-          <ChevronRight size={17} color={colors.muted} />
-        </View>
-      </Pressable>
 
       <Text style={[styles.sectionTitle, {color: colors.text}]}>快捷操作</Text>
       <View style={styles.actions}>
@@ -145,9 +128,6 @@ const styles = StyleSheet.create({
   infoLabel: {fontSize: 10, fontWeight: '600'},
   infoValue: {fontSize: 17, fontWeight: '800', marginTop: 4},
   infoDescription: {fontSize: 9, lineHeight: 12, marginTop: 3},
-  versionRow: {minHeight: 48, borderBottomWidth: 1, marginTop: 8, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between'},
-  versionRowRight: {flexDirection: 'row', alignItems: 'center'},
-  versionRowValue: {fontSize: 14, fontWeight: '700'},
   sectionTitle: {fontSize: 17, fontWeight: '800', marginTop: 25, marginBottom: 11},
   actions: {gap: 10},
   action: {borderRadius: 12, borderWidth: 1, padding: 16, flexDirection: 'row', alignItems: 'center', gap: 14},

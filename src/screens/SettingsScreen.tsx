@@ -17,7 +17,7 @@ export default function SettingsScreen({colors, version, onOpen}: Props) {
         <Pressable onPress={onOpen} style={styles.row}>
           <View style={styles.copy}>
             <Text style={[styles.label, {color: colors.text}]}>Karin 版本</Text>
-            <Text style={[styles.value, {color: colors.muted}]}>{version}</Text>
+            <Text style={[styles.value, {color: colors.muted}]}>{version ? `v${version}` : '未安装'}</Text>
           </View>
           <ChevronRight size={18} color={colors.muted} />
         </Pressable>

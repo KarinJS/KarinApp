@@ -16,6 +16,14 @@
  * Payloads are raw bytes, never shell-escaped. Lines longer than MAX_LINE
  * are split into multiple OUT frames. Single-threaded: poll() multiplexes
  * every child stdout/stderr pipe to avoid static-linking pthread TLS issues.
+ *
+ * File layout:
+ *   1. protocol constants & child state
+ *   2. frame IO (big-endian helpers, frame senders)
+ *   3. line buffering (split child output into lines)
+ *   4. child process management (spawn / kill / reap)
+ *   5. request dispatch (stdin frame parsing)
+ *   6. main poll loop
  */
 #include <errno.h>
 #include <fcntl.h>
@@ -27,6 +35,8 @@
 #include <string.h>
 #include <sys/wait.h>
 #include <unistd.h>
+
+/* ---- 1. protocol constants & child state ---- */
 
 #define REQ_EXEC 1
 #define REQ_KILL 2
@@ -44,19 +54,20 @@
 #define MAX_CHILDREN 64
 #define READ_CHUNK 4096
 
+/* One child output pipe (stdout or stderr) with its partial-line buffer. */
+typedef struct {
+  int fd;              /* read end; closed once done */
+  int done;            /* EOF seen on this pipe */
+  unsigned char *line; /* partial line not yet terminated by '\n' */
+  size_t line_len;
+  size_t line_cap;
+} pipe_t;
+
 typedef struct {
   char *id;
   pid_t pid;
-  int out_fd;
-  int err_fd;
-  int out_done;
-  int err_done;
-  unsigned char *line_out;
-  size_t line_out_len;
-  size_t line_out_cap;
-  unsigned char *line_err;
-  size_t line_err_len;
-  size_t line_err_cap;
+  pipe_t out; /* stdout */
+  pipe_t err; /* stderr */
 } child_t;
 
 static child_t g_children[MAX_CHILDREN];
@@ -74,6 +85,8 @@ static void handle_signal(int sig) {
   (void)sig;
   g_quit = 1;
 }
+
+/* ---- 2. frame IO ---- */
 
 static uint16_t get_be16(const unsigned char *p) {
   return (uint16_t)(((uint16_t)p[0] << 8) | p[1]);
@@ -109,17 +122,22 @@ static int write_all(int fd, const void *buf, size_t len) {
   return 0;
 }
 
-/* A failed send means the app stopped reading; tear everything down. */
-static int send_out(const char *id, int stream, const unsigned char *data, size_t len) {
+/* Writes the frame header and id field shared by OUT/EXIT frames.
+ * tail_len is the payload byte count that follows the id. */
+static int send_id_frame(uint8_t type, const char *id, uint32_t tail_len) {
   size_t id_len = strlen(id);
-  if (id_len > 65535 || len > 0xFFFFFFFFu) return -1;
-  uint32_t total = 1 + 2 + (uint32_t)id_len + 1 + 4 + (uint32_t)len;
+  if (id_len > 65535) return -1;
   unsigned char hdr[7];
-  put_be32(hdr, total);
-  hdr[4] = RESP_OUT;
+  put_be32(hdr, 1 + 2 + (uint32_t)id_len + tail_len);
+  hdr[4] = type;
   put_be16(hdr + 5, (uint16_t)id_len);
   if (write_all(STDOUT_FILENO, hdr, sizeof(hdr)) < 0) return -1;
-  if (write_all(STDOUT_FILENO, id, id_len) < 0) return -1;
+  return write_all(STDOUT_FILENO, id, id_len);
+}
+
+static int send_out(const char *id, int stream, const unsigned char *data, size_t len) {
+  if (len > 0xFFFFFFFFu) return -1;
+  if (send_id_frame(RESP_OUT, id, 1 + 4 + (uint32_t)len) < 0) return -1;
   unsigned char tail[5];
   tail[0] = (unsigned char)stream;
   put_be32(tail + 1, (uint32_t)len);
@@ -129,15 +147,7 @@ static int send_out(const char *id, int stream, const unsigned char *data, size_
 }
 
 static int send_exit(const char *id, uint32_t code) {
-  size_t id_len = strlen(id);
-  if (id_len > 65535) return -1;
-  uint32_t total = 1 + 2 + (uint32_t)id_len + 4;
-  unsigned char hdr[7];
-  put_be32(hdr, total);
-  hdr[4] = RESP_EXIT;
-  put_be16(hdr + 5, (uint16_t)id_len);
-  if (write_all(STDOUT_FILENO, hdr, sizeof(hdr)) < 0) return -1;
-  if (write_all(STDOUT_FILENO, id, id_len) < 0) return -1;
+  if (send_id_frame(RESP_EXIT, id, 4) < 0) return -1;
   unsigned char tail[4];
   put_be32(tail, code);
   return write_all(STDOUT_FILENO, tail, sizeof(tail));
@@ -150,7 +160,10 @@ static void send_ready(void) {
   (void)write_all(STDOUT_FILENO, frame, sizeof(frame));
 }
 
+/* A failed send means the app stopped reading; tear everything down. */
 static void mark_failed_send(void) { g_quit = 1; }
+
+/* ---- 3. line buffering ---- */
 
 static int ensure_cap(unsigned char **buf, size_t *cap, size_t need) {
   if (*cap >= need) return 0;
@@ -163,84 +176,79 @@ static int ensure_cap(unsigned char **buf, size_t *cap, size_t need) {
   return 0;
 }
 
-static void push_line(child_t *c, int is_err, const unsigned char *data, size_t n, int flush) {
-  unsigned char **line = is_err ? &c->line_err : &c->line_out;
-  size_t *len = is_err ? &c->line_err_len : &c->line_out_len;
-  size_t *cap = is_err ? &c->line_err_cap : &c->line_out_cap;
-  int stream = is_err ? STREAM_STDERR : STREAM_STDOUT;
-
+/* Appends bytes to the pipe's line buffer; sends a frame when the line hits
+ * MAX_LINE, and also flushes whatever is buffered when flush != 0. */
+static void push_line(child_t *c, pipe_t *p, int stream, const unsigned char *data, size_t n, int flush) {
   while (n > 0) {
-    size_t room = MAX_LINE - *len;
+    size_t room = MAX_LINE - p->line_len;
     size_t take = n < room ? n : room;
-    if (ensure_cap(line, cap, *len + take) < 0) {
-      *len = 0;
+    if (ensure_cap(&p->line, &p->line_cap, p->line_len + take) < 0) {
+      p->line_len = 0;
       return;
     }
-    memcpy(*line + *len, data, take);
-    *len += take;
+    memcpy(p->line + p->line_len, data, take);
+    p->line_len += take;
     data += take;
     n -= take;
-    if (*len >= MAX_LINE) {
-      if (send_out(c->id, stream, *line, *len) < 0) mark_failed_send();
-      *len = 0;
+    if (p->line_len >= MAX_LINE) {
+      if (send_out(c->id, stream, p->line, p->line_len) < 0) mark_failed_send();
+      p->line_len = 0;
     }
   }
-  if (flush && *len > 0) {
-    if (send_out(c->id, stream, *line, *len) < 0) mark_failed_send();
-    *len = 0;
+  if (flush && p->line_len > 0) {
+    if (send_out(c->id, stream, p->line, p->line_len) < 0) mark_failed_send();
+    p->line_len = 0;
   }
 }
 
-static void feed_output(child_t *c, int is_err, const unsigned char *buf, size_t n) {
+static void feed_output(child_t *c, pipe_t *p, int stream, const unsigned char *buf, size_t n) {
   size_t start = 0;
   for (size_t i = 0; i < n; i++) {
     if (buf[i] == '\n') {
-      push_line(c, is_err, buf + start, i - start, 1);
+      push_line(c, p, stream, buf + start, i - start, 1);
       start = i + 1;
     }
   }
-  if (start < n) push_line(c, is_err, buf + start, n - start, 0);
+  if (start < n) push_line(c, p, stream, buf + start, n - start, 0);
 }
 
-static void pump_fd(child_t *c, int is_err) {
-  int fd;
-  if (is_err) {
-    if (c->err_done) return;
-    fd = c->err_fd;
-  } else {
-    if (c->out_done) return;
-    fd = c->out_fd;
-  }
+/* Reads available bytes from the pipe; on EOF flushes the pending line and closes it. */
+static void pump_fd(child_t *c, pipe_t *p, int stream) {
+  if (p->done) return;
   unsigned char buf[READ_CHUNK];
-  ssize_t n = read(fd, buf, sizeof(buf));
+  ssize_t n = read(p->fd, buf, sizeof(buf));
   if (n < 0) {
     if (errno == EINTR || errno == EAGAIN) return;
     n = 0;
   }
   if (n == 0) {
-    if (is_err) {
-      c->err_done = 1;
-      if (c->line_err_len > 0) {
-        if (send_out(c->id, STREAM_STDERR, c->line_err, c->line_err_len) < 0) mark_failed_send();
-        c->line_err_len = 0;
-      }
-    } else {
-      c->out_done = 1;
-      if (c->line_out_len > 0) {
-        if (send_out(c->id, STREAM_STDOUT, c->line_out, c->line_out_len) < 0) mark_failed_send();
-        c->line_out_len = 0;
-      }
+    p->done = 1;
+    if (p->line_len > 0) {
+      if (send_out(c->id, stream, p->line, p->line_len) < 0) mark_failed_send();
+      p->line_len = 0;
     }
-    close(fd);
+    close(p->fd);
     return;
   }
-  feed_output(c, is_err, buf, (size_t)n);
+  feed_output(c, p, stream, buf, (size_t)n);
 }
 
-static child_t *find_by_fd(int fd) {
+/* ---- 4. child process management ---- */
+
+static child_t *find_by_fd(int fd, pipe_t **pipe_out, int *stream_out) {
   for (int i = 0; i < MAX_CHILDREN; i++) {
     child_t *c = &g_children[i];
-    if (c->pid && (c->out_fd == fd || c->err_fd == fd)) return c;
+    if (!c->pid) continue;
+    if (!c->out.done && c->out.fd == fd) {
+      *pipe_out = &c->out;
+      *stream_out = STREAM_STDOUT;
+      return c;
+    }
+    if (!c->err.done && c->err.fd == fd) {
+      *pipe_out = &c->err;
+      *stream_out = STREAM_STDERR;
+      return c;
+    }
   }
   return NULL;
 }
@@ -253,31 +261,19 @@ static child_t *find_slot(void) {
 }
 
 static void spawn_child(const char *id, const char *cmd) {
+  int fail_code = 127;
+  int out_pipe[2] = {-1, -1};
+  int err_pipe[2] = {-1, -1};
+  pid_t pid = -1;
+
   if (g_child_count >= MAX_CHILDREN) {
     if (send_exit(id, 126) < 0) mark_failed_send();
     return;
   }
-  int out_pipe[2];
-  int err_pipe[2];
-  if (pipe(out_pipe) < 0) {
-    if (send_exit(id, 127) < 0) mark_failed_send();
-    return;
-  }
-  if (pipe(err_pipe) < 0) {
-    close(out_pipe[0]);
-    close(out_pipe[1]);
-    if (send_exit(id, 127) < 0) mark_failed_send();
-    return;
-  }
-  pid_t pid = fork();
-  if (pid < 0) {
-    close(out_pipe[0]);
-    close(out_pipe[1]);
-    close(err_pipe[0]);
-    close(err_pipe[1]);
-    if (send_exit(id, 127) < 0) mark_failed_send();
-    return;
-  }
+  if (pipe(out_pipe) < 0) goto fail;
+  if (pipe(err_pipe) < 0) goto fail;
+  pid = fork();
+  if (pid < 0) goto fail;
   if (pid == 0) {
     /* Child: own process group, stdout/stderr piped back, stdin /dev/null. */
     setpgid(0, 0);
@@ -299,30 +295,31 @@ static void spawn_child(const char *id, const char *cmd) {
   }
   /* Parent keeps the read ends; write ends are owned by the child. */
   close(out_pipe[1]);
+  out_pipe[1] = -1;
   close(err_pipe[1]);
+  err_pipe[1] = -1;
   fcntl(out_pipe[0], F_SETFL, O_NONBLOCK);
   fcntl(err_pipe[0], F_SETFL, O_NONBLOCK);
   child_t *c = find_slot();
   if (!c) {
-    close(out_pipe[0]);
-    close(err_pipe[0]);
     killpg(pid, SIGKILL);
-    if (send_exit(id, 126) < 0) mark_failed_send();
-    return;
+    fail_code = 126;
+    goto fail;
   }
+  memset(c, 0, sizeof(*c));
   c->id = strdup(id);
   c->pid = pid;
-  c->out_fd = out_pipe[0];
-  c->err_fd = err_pipe[0];
-  c->out_done = 0;
-  c->err_done = 0;
-  c->line_out = NULL;
-  c->line_out_len = 0;
-  c->line_out_cap = 0;
-  c->line_err = NULL;
-  c->line_err_len = 0;
-  c->line_err_cap = 0;
+  c->out.fd = out_pipe[0];
+  c->err.fd = err_pipe[0];
   g_child_count++;
+  return;
+
+fail:
+  if (out_pipe[0] >= 0) close(out_pipe[0]);
+  if (out_pipe[1] >= 0) close(out_pipe[1]);
+  if (err_pipe[0] >= 0) close(err_pipe[0]);
+  if (err_pipe[1] >= 0) close(err_pipe[1]);
+  if (send_exit(id, (uint32_t)fail_code) < 0) mark_failed_send();
 }
 
 static void kill_child(const char *id) {
@@ -334,6 +331,49 @@ static void kill_child(const char *id) {
     }
   }
 }
+
+/* Reaps children whose output pipes both hit EOF and reports their exit code. */
+static int reap_children(void) {
+  for (int i = 0; i < MAX_CHILDREN; i++) {
+    child_t *c = &g_children[i];
+    if (!c->pid || !c->out.done || !c->err.done) continue;
+    int status = 0;
+    pid_t r = waitpid(c->pid, &status, WNOHANG);
+    if (r < 0) {
+      if (errno == EINTR) continue;
+      if (send_exit(c->id, 1) < 0) return -1;
+    } else if (r == 0) {
+      continue;
+    } else {
+      int code = WIFEXITED(status) ? WEXITSTATUS(status)
+                  : (WIFSIGNALED(status) ? 128 + WTERMSIG(status) : 1);
+      if (send_exit(c->id, (uint32_t)code) < 0) return -1;
+    }
+    free(c->id);
+    free(c->out.line);
+    free(c->err.line);
+    memset(c, 0, sizeof(*c));
+    g_child_count--;
+  }
+  return 0;
+}
+
+static void shutdown_all(void) {
+  for (int i = 0; i < MAX_CHILDREN; i++) {
+    child_t *c = &g_children[i];
+    if (!c->pid) continue;
+    killpg(c->pid, SIGKILL);
+    waitpid(c->pid, NULL, 0);
+    free(c->id);
+    free(c->out.line);
+    free(c->err.line);
+    if (!c->out.done) close(c->out.fd);
+    if (!c->err.done) close(c->err.fd);
+    memset(c, 0, sizeof(*c));
+  }
+}
+
+/* ---- 5. request dispatch ---- */
 
 static void handle_exec(const unsigned char *body, uint32_t body_len) {
   if (body_len < 2) return;
@@ -433,45 +473,7 @@ static void handle_stdin(void) {
   consume_frames();
 }
 
-static int reap_children(void) {
-  for (int i = 0; i < MAX_CHILDREN; i++) {
-    child_t *c = &g_children[i];
-    if (!c->pid || !c->out_done || !c->err_done) continue;
-    int status = 0;
-    pid_t r = waitpid(c->pid, &status, WNOHANG);
-    if (r < 0) {
-      if (errno == EINTR) continue;
-      if (send_exit(c->id, 1) < 0) return -1;
-    } else if (r == 0) {
-      continue;
-    } else {
-      int code = WIFEXITED(status) ? WEXITSTATUS(status)
-                  : (WIFSIGNALED(status) ? 128 + WTERMSIG(status) : 1);
-      if (send_exit(c->id, (uint32_t)code) < 0) return -1;
-    }
-    free(c->id);
-    free(c->line_out);
-    free(c->line_err);
-    memset(c, 0, sizeof(*c));
-    g_child_count--;
-  }
-  return 0;
-}
-
-static void shutdown_all(void) {
-  for (int i = 0; i < MAX_CHILDREN; i++) {
-    child_t *c = &g_children[i];
-    if (!c->pid) continue;
-    killpg(c->pid, SIGKILL);
-    waitpid(c->pid, NULL, 0);
-    free(c->id);
-    free(c->line_out);
-    free(c->line_err);
-    if (!c->out_done) close(c->out_fd);
-    if (!c->err_done) close(c->err_fd);
-    memset(c, 0, sizeof(*c));
-  }
-}
+/* ---- 6. main poll loop ---- */
 
 int main(void) {
   signal(SIGPIPE, SIG_IGN);
@@ -494,17 +496,14 @@ int main(void) {
     for (int i = 0; i < MAX_CHILDREN; i++) {
       child_t *c = &g_children[i];
       if (!c->pid) continue;
-      if (!c->out_done) {
-        fds[nfds].fd = c->out_fd;
-        fds[nfds].events = POLLIN;
-        fds[nfds].revents = 0;
-        nfds++;
-      }
-      if (!c->err_done) {
-        fds[nfds].fd = c->err_fd;
-        fds[nfds].events = POLLIN;
-        fds[nfds].revents = 0;
-        nfds++;
+      pipe_t *pipes[2] = {&c->out, &c->err};
+      for (int j = 0; j < 2; j++) {
+        if (!pipes[j]->done) {
+          fds[nfds].fd = pipes[j]->fd;
+          fds[nfds].events = POLLIN;
+          fds[nfds].revents = 0;
+          nfds++;
+        }
       }
     }
     int r = poll(fds, nfds, 1000);
@@ -519,8 +518,10 @@ int main(void) {
         handle_stdin();
         continue;
       }
-      child_t *c = find_by_fd(fds[i].fd);
-      if (c) pump_fd(c, fds[i].fd == c->err_fd);
+      pipe_t *p;
+      int stream;
+      child_t *c = find_by_fd(fds[i].fd, &p, &stream);
+      if (c) pump_fd(c, p, stream);
     }
   }
 

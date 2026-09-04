@@ -27,10 +27,29 @@ const NODE_INSTALL_COMMAND = [
 ].join(' && ');
 const NPM_INSTALL_COMMAND = 'npm install -g npm@latest';
 const PNPM_INSTALL_COMMAND = 'npm install -g pnpm@9';
-const KARIN_PREPARE_COMMAND = [
-  'mkdir -p /root/karin',
-  'test -f /root/karin/node_modules/node-karin/package.json || (cd /root/karin && if test -f pnpm-workspace.yaml; then pnpm -w i node-karin@latest; else pnpm i node-karin@latest; fi && npx node-karin init)',
+const KARIN_DIR = '/root/karin';
+/** node-karin init 生成的标志文件；init 内部的 pnpm install -f 会重建 node_modules，绝不能重复执行。 */
+const KARIN_INIT_MARKERS = [`${KARIN_DIR}/index.mjs`, `${KARIN_DIR}/.env`];
+
+const KARIN_INSTALL_COMMAND = [
+  `mkdir -p ${KARIN_DIR}`,
+  `cd ${KARIN_DIR}`,
+  'if test -f pnpm-workspace.yaml; then pnpm -w i node-karin@latest; else pnpm i node-karin@latest; fi',
 ].join(' && ');
+const KARIN_INIT_COMMAND = `cd ${KARIN_DIR} && npx node-karin init`;
+
+/** 在容器内执行 shell 检测命令，退出码非 0 视为条件不满足。 */
+async function checkShell(command: string): Promise<boolean> {
+  try {
+    await executeAndCollect(command, PROBE_TIMEOUT_MS);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+const isKarinInstalled = () => checkShell(`test -f ${KARIN_DIR}/node_modules/node-karin/package.json`);
+const isKarinInitialized = () => checkShell(KARIN_INIT_MARKERS.map(file => `test -f ${file}`).join(' && '));
 
 export async function inspectEnvironment(): Promise<InstalledVersions> {
   const probe = async (command: string) => {
@@ -45,7 +64,7 @@ export async function inspectEnvironment(): Promise<InstalledVersions> {
     probe('node --version 2>/dev/null'),
     probe('npm --version 2>/dev/null'),
     probe('pnpm --version 2>/dev/null'),
-    probe("node -p \"require('/root/karin/node_modules/node-karin/package.json').version\" 2>/dev/null"),
+    probe("node -p 'require(\"/root/karin/node_modules/node-karin/package.json\").version' 2>/dev/null"),
   ]);
   return {node, npm, pnpm, karin};
 }
@@ -101,20 +120,67 @@ async function ensurePnpm(current: InstalledVersions, onPhase: PhaseHandler, onL
   return current;
 }
 
-/** 准备 /root/karin 目录与 node-karin 运行时。 */
-async function prepareKarin(onPhase: PhaseHandler, onLog: LogHandler) {
-  onPhase('正在准备 Karin');
-  await runStreaming(KARIN_PREPARE_COMMAND, onLog, PACKAGE_STEP_TIMEOUT_MS);
+/**
+ * 强制 pnpm 使用复制模式。pnpm 默认把 store 里的文件硬链接进 node_modules，
+ * 但 Android 应用私有目录被 SELinux 禁止创建硬链接，proot 的 link2symlink
+ * 影子链在强制重装时容易损坏（链接悬空导致已安装的包读不到），因此容器内
+ * 一律改为复制。配置写入容器全局 pnpm rc，幂等。
+ */
+async function ensurePnpmCopyMode(onLog: LogHandler) {
+  await executeAndCollect('pnpm config set package-import-method copy', PACKAGE_STEP_TIMEOUT_MS);
+  onLog('pnpm 已配置为复制模式（package-import-method=copy）');
+}
+
+/** 准备 /root/karin：仅在未安装时安装 node-karin，仅在未初始化时执行 init（两者都可安全重复进入）。 */
+async function prepareKarin(current: InstalledVersions, onPhase: PhaseHandler, onLog: LogHandler) {
+  if (current.karin || (await isKarinInstalled())) {
+    onLog(`node-karin 已安装${current.karin ? `（v${current.karin}）` : ''}，跳过安装`);
+  } else {
+    if (await checkShell(`test -d ${KARIN_DIR}/node_modules`)) {
+      // node-karin 读不到但 node_modules 存在：多为 proot link2symlink 影子链损坏的残留，
+      // pnpm 对此会误判 "Already up to date" 而不修复，必须先清理再重装。
+      onLog('检测到损坏的 node_modules，清理后重新安装');
+      await runStreaming(`rm -rf ${KARIN_DIR}/node_modules`, onLog, PACKAGE_STEP_TIMEOUT_MS);
+    }
+    onPhase('正在安装 node-karin');
+    await runStreaming(KARIN_INSTALL_COMMAND, onLog, INSTALL_STEP_TIMEOUT_MS);
+  }
+  if (await isKarinInitialized()) {
+    onLog('Karin 已初始化，跳过 node-karin init');
+  } else {
+    onPhase('正在初始化 Karin');
+    await runStreaming(KARIN_INIT_COMMAND, onLog, PACKAGE_STEP_TIMEOUT_MS);
+  }
   onPhase('运行环境准备完成');
+}
+
+const KARIN_VERSION_PATTERN = /^\d+\.\d+\.\d+(?:-[\w.]+)?$/;
+const VERSION_LIST_TIMEOUT_MS = 30_000;
+
+/** 从 npm registry 查询 node-karin 的全部发布版本，按从新到旧排序。 */
+export async function fetchKarinVersions(): Promise<string[]> {
+  const output = await executeAndCollect('npm view node-karin versions --json 2>/dev/null', VERSION_LIST_TIMEOUT_MS);
+  const parsed: unknown = JSON.parse(output.trim());
+  const list = Array.isArray(parsed) ? parsed : [parsed];
+  const versions = list.filter((v): v is string => typeof v === 'string' && KARIN_VERSION_PATTERN.test(v));
+  if (versions.length === 0) throw new Error('版本列表为空');
+  return versions.reverse();
+}
+
+/** 在 /root/karin 中切换 node-karin 到指定版本；只安装，不执行 init。 */
+export async function switchKarinVersion(version: string, onLog: LogHandler): Promise<void> {
+  if (!KARIN_VERSION_PATTERN.test(version)) throw new Error(`非法版本号: ${version}`);
+  const command = `cd ${KARIN_DIR} && if test -f pnpm-workspace.yaml; then pnpm -w i node-karin@${version}; else pnpm i node-karin@${version}; fi`;
+  await runStreaming(command, onLog, PACKAGE_STEP_TIMEOUT_MS);
 }
 
 export async function installEnvironment({onPhase, onLog}: EnvironmentInstallHandlers) {
   let current = await inspectEnvironment();
   current = await ensureNode(current, onPhase, onLog);
   current = await ensureNpm(current, onPhase, onLog);
-  await ensurePnpm(current, onPhase, onLog);
-  const KarinV = await executeAndCollect(`node -e "const fs = require('fs'); const path = '/sdcard/Download/test.txt';fs.ex"`, PROBE_TIMEOUT_MS)
-  await prepareKarin(onPhase, onLog);
+  await ensurePnpm(current, onPhase, onLog)
+  await ensurePnpmCopyMode(onLog);
+  await prepareKarin(current, onPhase, onLog);
   const final = await inspectEnvironment();
   onLog(`Node.js ${final.node || '-'} / npm ${final.npm || '-'} / pnpm ${final.pnpm || '-'} / node-karin ${final.karin || '-'}`);
 }

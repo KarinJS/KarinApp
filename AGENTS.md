@@ -2,7 +2,13 @@
 
 ## Project
 
-Karin is an Android-first React Native app for managing a bundled proot environment and KarinJS/Karin processes on mobile. The current phase is UI prototyping; proot, process control, terminal execution, file access, memory usage, and version switching are placeholders unless explicitly implemented later.
+Karin is an Android-first React Native app for managing a bundled proot environment and KarinJS/Karin processes on mobile. The current phase is UI prototyping; process control, terminal execution, file access, and memory usage are placeholders unless explicitly implemented later. proot container startup, in-container command execution (via the karin-ipc daemon), environment installation, and Karin version switching are implemented.
+
+## Container Notes
+
+- SELinux blocks hardlinks in the app-private directory on some devices, so proot runs with `--link2symlink` when the hardlink probe fails. pnpm is forced to `package-import-method=copy` at every boot: proot's l2s shadow links corrupt under `pnpm install -f` and leave dangling symlinks that read as ENOENT inside the container.
+- `node-karin init` runs only once (markers: `/root/karin/index.mjs` and `.env`); its internal `pnpm install -f` must not be repeated.
+- Native layout: `ProotModule.kt` (React bridge + daemon session), `RootfsInstaller.kt` (rootfs extraction), `ProotRuntime.kt` (proot argv/env + guest processes), `IpcProtocol.kt` (frame codec), `cpp/karin-ipc.c` (in-container daemon).
 
 ## Stack
 
@@ -16,10 +22,10 @@ Karin is an Android-first React Native app for managing a bundled proot environm
 ## Current UI
 
 - Bottom navigation: Home, Plugins, Settings
-- Home: Karin runtime, memory placeholder, architecture, version row, terminal and file-manager shortcuts
+- Home: Karin runtime, memory placeholder, architecture, terminal and file-manager shortcuts
 - Top-right container indicator opens restart/force-restart actions
 - Bottom-right power button independently starts/stops Karin in UI state
-- Version selection uses an iOS-style bottom sheet with a collapsible list
+- Settings shows the real installed node-karin version; its bottom sheet fetches the version list from npm (`npm view node-karin versions`) and switches versions via `pnpm i node-karin@<version>`
 - Light and dark themes follow the system color scheme
 
 Keep these concepts separate:
