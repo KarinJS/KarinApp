@@ -174,6 +174,22 @@ export async function switchKarinVersion(version: string, onLog: LogHandler): Pr
   await runStreaming(command, onLog, PACKAGE_STEP_TIMEOUT_MS);
 }
 
+/**
+ * 强制重装 /root/karin 项目：先删除整个项目目录，再重新安装 node-karin 并执行 init。
+ * 与 prepareKarin 的“已安装则跳过”不同，这里无条件重装；目录被删后 init 标志
+ * 不复存在，init 必然执行（其内部的 pnpm install -f 也只会在此次执行一次）。
+ */
+export async function reinstallKarinProject({onPhase, onLog}: EnvironmentInstallHandlers): Promise<void> {
+  await ensurePnpmCopyMode(onLog);
+  onPhase('正在清理 Karin 项目目录');
+  await runStreaming(`rm -rf ${KARIN_DIR}`, onLog, PACKAGE_STEP_TIMEOUT_MS);
+  onPhase('正在安装 node-karin');
+  await runStreaming(KARIN_INSTALL_COMMAND, onLog, INSTALL_STEP_TIMEOUT_MS);
+  onPhase('正在初始化 Karin');
+  await runStreaming(KARIN_INIT_COMMAND, onLog, PACKAGE_STEP_TIMEOUT_MS);
+  onPhase('运行环境准备完成');
+}
+
 export async function installEnvironment({onPhase, onLog}: EnvironmentInstallHandlers) {
   let current = await inspectEnvironment();
   current = await ensureNode(current, onPhase, onLog);

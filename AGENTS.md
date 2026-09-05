@@ -17,6 +17,7 @@ Karin is an Android-first React Native app for managing a bundled proot environm
 - Entry: `index.js` -> `src/App.tsx`
 - Safe areas: `react-native-safe-area-context`
 - Icons: `lucide-react-native` + `react-native-svg`
+- Code highlighting: `lowlight` (highlight.js grammars) via `CodeViewer`; editor is a plain `TextInput` (`CodeEditor`) — no transparent-overlay highlighting, it desyncs on scroll
 - Node.js >= 22.11
 
 ## Current UI

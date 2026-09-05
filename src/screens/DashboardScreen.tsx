@@ -7,10 +7,17 @@ type Props = {
   colors: Colors;
   karinRunning: boolean;
   karinSeconds: number;
+  memoryBytes: number;
+  onOpenFiles: () => void;
   onAction: (message: string) => void;
 };
 
-export default function DashboardScreen({colors, karinRunning, karinSeconds, onAction}: Props) {
+function formatMemory(bytes: number): string {
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
+  return `${(bytes / 1024 / 1024).toFixed(0)} MB`;
+}
+
+export default function DashboardScreen({colors, karinRunning, karinSeconds, memoryBytes, onOpenFiles, onAction}: Props) {
   return (
     <ScrollView contentContainerStyle={styles.dashboard}>
       <View style={[styles.statusRow, {backgroundColor: colors.surface, borderColor: colors.border}]}>
@@ -27,7 +34,7 @@ export default function DashboardScreen({colors, karinRunning, karinSeconds, onA
       <View style={styles.infoGrid}>
         <InfoCard
           title="内存占用"
-          value={karinRunning ? '128 MB' : '--'}
+          value={karinRunning ? formatMemory(memoryBytes) : '--'}
           description="当前 Karin 使用量"
           color={colors.purple}
           softColor={colors.purpleSoft}
@@ -48,7 +55,7 @@ export default function DashboardScreen({colors, karinRunning, karinSeconds, onA
       <Text style={[styles.sectionTitle, {color: colors.text}]}>快捷操作</Text>
       <View style={styles.actions}>
         <Action title="终端" subtitle="运行 Karin 命令" icon="terminal" colors={colors} onPress={() => onAction('终端功能占位')} />
-        <Action title="文件管理" subtitle="浏览容器文件" icon="folder" colors={colors} onPress={() => onAction('文件管理功能占位')} />
+        <Action title="文件管理" subtitle="查看 Karin 项目文件" icon="folder" colors={colors} onPress={onOpenFiles} />
       </View>
     </ScrollView>
   );

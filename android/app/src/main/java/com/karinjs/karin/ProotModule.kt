@@ -99,6 +99,21 @@ class ProotModule(private val context: ReactApplicationContext) : ReactContextBa
     "stopped"
   }
 
+  /** 重置容器：强制终止 keeper 进程，删除已解包的 rootfs，下次启动重新解包。 */
+  @ReactMethod
+  fun reset(promise: Promise) = runAsync(promise, "PROOT_RESET_FAILED") {
+    val keeper: Process?
+    synchronized(lock) {
+      keeper = keeperProcess
+      keeperProcess = null
+      keeperWriter = null
+    }
+    keeper?.let(::terminate)
+    rootfs.reset()
+    runtime.clearHardlinkCache()
+    "reset"
+  }
+
   @ReactMethod
   fun status(promise: Promise) = promise.resolve(if (keeperProcess?.isAlive == true) "running" else "stopped")
 

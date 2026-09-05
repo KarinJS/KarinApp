@@ -49,6 +49,14 @@ internal class RootfsInstaller(private val context: Context) {
     }
   }
 
+  /** 删除已解包的容器根目录（含 .karin-ready 标记），下次 ensureContainer 会重新解包。 */
+  fun reset() {
+    val root = File(context.filesDir, "debian-rootfs")
+    synchronized(extractLock) {
+      if (root.exists() && !root.deleteRecursively()) throw IllegalStateException("无法删除容器目录")
+    }
+  }
+
   private fun extractRootfs(archive: File, root: File) {
     val pendingLinks = mutableListOf<Triple<File, File, Int>>()
     val rootPath = root.canonicalFile.toPath()

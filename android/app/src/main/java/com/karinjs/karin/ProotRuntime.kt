@@ -96,6 +96,11 @@ internal class ProotRuntime(private val context: Context) {
     }
   }
 
+  /** 清除硬链接探测缓存；容器重置后需对新解包的 rootfs 重新探测。 */
+  internal fun clearHardlinkCache() {
+    hardlinkSupport = null
+  }
+
   private companion object {
     @Volatile var hardlinkSupport: Boolean? = null
   }
