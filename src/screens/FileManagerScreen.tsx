@@ -17,8 +17,6 @@ import {
   X,
 } from 'lucide-react-native';
 import {karinFileService, FileEntry} from '../services/karinFileService';
-import CodeEditor from '../components/CodeEditor';
-import CodeViewer from '../components/CodeViewer';
 import ConfirmDialog from '../components/ConfirmDialog';
 import {Colors} from '../theme/colors';
 import {primaryTextStyle} from '../theme/styles';
@@ -303,11 +301,18 @@ export default function FileManagerScreen({colors, onBack}: Props) {
               <ActivityIndicator size="small" color={colors.accent} />
             </View>
           ) : editing.mode === 'view' ? (
-            <CodeViewer colors={colors} code={editing.draft} fileName={editing.name} />
+            <ScrollView style={styles.readOnlyScroll} nestedScrollEnabled>
+              <Text selectable style={[styles.readOnlyText, {color: colors.text}]}>
+                {editing.draft}
+              </Text>
+            </ScrollView>
           ) : (
-            <CodeEditor
-              colors={colors}
+            <TextInput
+              style={[styles.plainEditor, {color: colors.text}]}
               value={editing.draft}
+              multiline
+              scrollEnabled
+              textAlignVertical="top"
               onChangeText={draft => setEditing(current => (current ? {...current, draft} : current))}
             />
           )}
@@ -591,6 +596,9 @@ const styles = StyleSheet.create({
   editButtonText: {fontSize: 12, fontWeight: '800'},
   hint: {fontSize: 11, fontWeight: '600', paddingHorizontal: 14, paddingTop: 8},
   editorWrap: {flex: 1, margin: 12, borderRadius: 10, borderWidth: 1, overflow: 'hidden'},
+  readOnlyScroll: {flex: 1},
+  readOnlyText: {padding: 10, fontFamily: 'monospace', fontSize: 12, lineHeight: 18},
+  plainEditor: {flex: 1, padding: 10, fontFamily: 'monospace', fontSize: 12, lineHeight: 18},
   list: {flex: 1},
   row: {flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 14, minHeight: 44, borderBottomWidth: StyleSheet.hairlineWidth},
   rowName: {flex: 1, fontSize: 13, fontWeight: '600'},

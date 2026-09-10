@@ -1,3 +1,7 @@
 <resources>
+    <string name="karin_foreground_channel_name">Karin 运行状态</string>
+    <string name="karin_foreground_channel_description">在 Karin 运行期间显示常驻通知</string>
+    <string name="karin_foreground_title">Karin 正在运行</string>
+    <string name="karin_foreground_text">Karin 保持在后台运行</string>
     <string name="app_name">Karin</string>
 </resources>

@@ -48,21 +48,26 @@ async function probe(): Promise<KarinProbeResult> {
     const parsed: unknown = JSON.parse(lines[lines.length - 1]);
     if (typeof parsed !== 'object' || parsed === null) throw new Error('探针输出格式错误');
     const result = parsed as Partial<KarinProbeResult>;
-    return {
+    const parsedResult = {
       running: result.running === true,
       memoryBytes: typeof result.memoryBytes === 'number' ? result.memoryBytes : 0,
     };
+    console.log(`[KarinDiag] probe ok running=${parsedResult.running} mem=${parsedResult.memoryBytes}`);
+    return parsedResult;
   } catch {
     // 容器未运行、命令超时等情况一律视为未运行
+    console.log('[KarinDiag] probe failed -> running=false');
     return {running: false, memoryBytes: 0};
   }
 }
 
 async function start(): Promise<void> {
   const status = await probe();
+  console.log(`[KarinDiag] start() probe running=${status.running}`);
   if (status.running) return;
   await prootController.execute(START_COMMAND, FIXED_ID);
   startedAt = Date.now();
+  console.log(`[KarinDiag] start() exec sent at ${startedAt}`);
 }
 
 function stop(): Promise<void> {
@@ -97,6 +102,7 @@ function getStartedAt(): number | null {
 function subscribeExit(callback: () => void): () => void {
   const subscription = prootController.subscribe(event => {
     if (event.commandId !== FIXED_ID || event.stream !== 'exit') return;
+    console.log(`[KarinDiag] exit event id=${FIXED_ID} code=${event.exitCode} aliveMs=${startedAt ? Date.now() - startedAt : -1}`);
     startedAt = null;
     callback();
   });

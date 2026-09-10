@@ -6,6 +6,7 @@ import com.facebook.react.bridge.ReactApplicationContext
 import com.facebook.react.bridge.ReactContextBaseJavaModule
 import com.facebook.react.bridge.ReactMethod
 import com.facebook.react.modules.core.DeviceEventManagerModule
+import android.os.Build
 import java.io.BufferedOutputStream
 import java.io.DataInputStream
 import java.io.DataOutputStream
@@ -116,6 +117,28 @@ class ProotModule(private val context: ReactApplicationContext) : ReactContextBa
 
   @ReactMethod
   fun status(promise: Promise) = promise.resolve(if (keeperProcess?.isAlive == true) "running" else "stopped")
+
+  @ReactMethod
+  fun startForegroundService(promise: Promise) {
+    try {
+      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) context.startForegroundService(
+        android.content.Intent(context, KarinForegroundService::class.java),
+      ) else context.startService(android.content.Intent(context, KarinForegroundService::class.java))
+      promise.resolve("started")
+    } catch (error: Exception) {
+      promise.reject("FOREGROUND_SERVICE_START_FAILED", error)
+    }
+  }
+
+  @ReactMethod
+  fun stopForegroundService(promise: Promise) {
+    try {
+      context.stopService(android.content.Intent(context, KarinForegroundService::class.java))
+      promise.resolve("stopped")
+    } catch (error: Exception) {
+      promise.reject("FOREGROUND_SERVICE_STOP_FAILED", error)
+    }
+  }
 
   @ReactMethod
   fun execute(command: String, commandId: String, promise: Promise) {

@@ -72,6 +72,18 @@ def enableProguardInReleaseBuilds = false
  */
 def jscFlavor = 'io.github.react-native-community:jsc-android:2026004.+'
 
+def packageJson = new groovy.json.JsonSlurper().parseText(file("$rootDir/../package.json").text)
+def semanticVersion = packageJson.version.toString().split('\\.')
+def computedVersionCode = semanticVersion[0].toInteger() * 1000000 +
+        semanticVersion[1].toInteger() * 1000 +
+        semanticVersion[2].toInteger()
+
+def releaseStoreFile = System.getenv('KARIN_STORE_FILE') ?: findProperty('KARIN_STORE_FILE')
+def releaseStorePassword = System.getenv('KARIN_STORE_PASSWORD') ?: findProperty('KARIN_STORE_PASSWORD')
+def releaseKeyAlias = System.getenv('KARIN_KEY_ALIAS') ?: findProperty('KARIN_KEY_ALIAS')
+def releaseKeyPassword = System.getenv('KARIN_KEY_PASSWORD') ?: findProperty('KARIN_KEY_PASSWORD')
+def hasReleaseSigning = releaseStoreFile && releaseStorePassword && releaseKeyAlias && releaseKeyPassword
+
 android {
     ndkVersion rootProject.ext.ndkVersion
     buildToolsVersion rootProject.ext.buildToolsVersion
@@ -87,8 +99,8 @@ android {
         applicationId "com.karinjs.karin"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 1
-        versionName "1.0"
+        versionCode computedVersionCode
+        versionName packageJson.version
     }
     signingConfigs {
         debug {
@@ -96,6 +108,16 @@ android {
             storePassword 'android'
             keyAlias 'androiddebugkey'
             keyPassword 'android'
+        }
+        release {
+            if (hasReleaseSigning) {
+                storeFile file(releaseStoreFile)
+                storePassword releaseStorePassword
+                keyAlias releaseKeyAlias
+                keyPassword releaseKeyPassword
+            }
+            enableV1Signing true
+            enableV2Signing true
         }
     }
     buildTypes {
@@ -105,9 +127,15 @@ android {
         release {
             // Caution! In production, you need to generate your own keystore file.
             // see https://reactnative.dev/docs/signed-apk-android.
-            signingConfig signingConfigs.debug
+            signingConfig signingConfigs.release
             minifyEnabled enableProguardInReleaseBuilds
             proguardFiles getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro"
+        }
+    }
+
+    tasks.matching { it.name == 'assembleRelease' }.configureEach {
+        doFirst {
+            if (!hasReleaseSigning) throw new GradleException('Release signing configuration is missing')
         }
     }
 }

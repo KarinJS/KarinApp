@@ -33,6 +33,7 @@ local.properties
 .cxx/
 *.keystore
 !debug.keystore
+*.jks
 .kotlin/
 
 # node.js
@@ -76,3 +77,4 @@ yarn-error.log
 
 termux-pkgs/
 .gradle-local/
+.android-local/

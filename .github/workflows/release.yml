@@ -1,0 +1,151 @@
+name: Release APK
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-main
+  cancel-in-progress: false
+
+jobs:
+  semantic:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    outputs:
+      release: ${{ steps.semantic.outputs.release }}
+      level: ${{ steps.semantic.outputs.level }}
+    steps:
+      - name: Determine release level
+        id: semantic
+        shell: bash
+        env:
+          COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
+        run: |
+          message="$COMMIT_MESSAGE"
+
+          if printf '%s\n' "$message" | grep -Eq '^(feat|fix|perf|refactor|revert|build|chore|ci|docs|style|test)(\([^)]+\))?!:' ||
+             printf '%s\n' "$message" | grep -q '^BREAKING CHANGE:'; then
+            level=major
+          elif printf '%s\n' "$message" | grep -Eq '^feat(\([^)]+\))?:'; then
+            level=minor
+          elif printf '%s\n' "$message" | grep -Eq '^(fix|perf|revert)(\([^)]+\))?:'; then
+            level=patch
+          else
+            level=none
+          fi
+
+          if [ "$level" = none ]; then
+            release=false
+          else
+            release=true
+          fi
+
+          echo "level=$level" >> "$GITHUB_OUTPUT"
+          echo "release=$release" >> "$GITHUB_OUTPUT"
+
+  release:
+    needs: semantic
+    if: needs.semantic.outputs.release == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.9
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.11.0
+          cache: pnpm
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android NDK
+        run: sdkmanager --install "ndk;27.1.12297006"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Check project
+        run: |
+          npx tsc --noEmit
+          pnpm lint -- --no-cache
+
+      - name: Bump package version
+        id: version
+        env:
+          LEVEL: ${{ needs.semantic.outputs.level }}
+        run: |
+          npm version "$LEVEL" --no-git-tag-version
+          version="$(node -p "require('./package.json').version")"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "apk=Karin-$version.apk" >> "$GITHUB_OUTPUT"
+
+      - name: Prepare Android signing key
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: printf '%s' "$KEYSTORE_BASE64" | base64 --decode > android/app/karin.jks
+
+      - name: Build signed release APK
+        working-directory: android
+        run: ./gradlew assembleRelease --stacktrace
+        env:
+          KARIN_STORE_FILE: karin.jks
+          KARIN_STORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KARIN_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KARIN_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+
+      - name: Verify and rename APK
+        run: |
+          apk="android/app/build/outputs/apk/release/app-release.apk"
+          apksigner="$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -n 1)"
+          "$apksigner" verify --print-certs "$apk" > /dev/null
+          mv "$apk" "${{ steps.version.outputs.apk }}"
+          rm -f android/app/karin.jks
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.version.outputs.apk }}
+          path: ${{ steps.version.outputs.apk }}
+          if-no-files-found: error
+
+      - name: Commit version and tag
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add package.json pnpm-lock.yaml
+          git commit -m "chore(release): v$VERSION"
+          git tag "v$VERSION"
+          git push origin "HEAD:main" "v$VERSION"
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.version.outputs.version }}
+          name: Karin v${{ steps.version.outputs.version }}
+          files: ${{ steps.version.outputs.apk }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

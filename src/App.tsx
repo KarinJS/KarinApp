@@ -16,6 +16,8 @@ import FileManagerScreen from './screens/FileManagerScreen';
 import PluginsScreen from './screens/PluginsScreen';
 import SettingsScreen from './screens/SettingsScreen';
 import {karinService} from './services/karinService';
+import {loadAppSettings} from './services/appSettings';
+import {foregroundService, requestNotificationPermission} from './services/foregroundService';
 import {prootController} from './services/prootController';
 import {inspectEnvironment, switchKarinVersion} from './services/environmentService';
 import {openLogLocation, saveStartupLog} from './services/logService';
@@ -71,6 +73,8 @@ export default function App() {
         setContainerState('running');
         setStartupDone(true);
         refreshKarinVersion();
+        /** 提前读一次设置，插件安装才能用上 GitHub 加速前缀 */
+        loadAppSettings().catch(() => {});
       })
       .catch(error => {
         const message = error instanceof Error ? error.message : '启动准备失败';
@@ -94,6 +98,10 @@ export default function App() {
     boot();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => karinService.subscribeExit(() => {
+    foregroundService.stop().catch(() => {});
+  }), []);
 
   const handleRestart = async (force: boolean) => {
     if (containerBusy) {
@@ -123,9 +131,19 @@ export default function App() {
     try {
       if (karinRunning) {
         await karinService.stop();
+        await foregroundService.stop().catch(() => {});
         showNotice('Karin 已停止');
       } else {
-        await karinService.start();
+        const notificationAllowed = await requestNotificationPermission();
+        console.log(`[KarinDiag] notificationAllowed=${notificationAllowed}`);
+        if (notificationAllowed) await foregroundService.start();
+        else showNotice('未授予通知权限，Karin 已启动，但后台保活能力会降低');
+        try {
+          await karinService.start();
+        } catch (error) {
+          await foregroundService.stop().catch(() => {});
+          throw error;
+        }
         showNotice('Karin 已启动');
       }
     } catch (error) {
@@ -161,6 +179,8 @@ export default function App() {
       }
       setResetProgress(null);
       refreshKarinVersion();
+      /** 容器被重置后设置文件没了，重新读一次（项目重置则只是刷新） */
+      loadAppSettings(true).catch(() => {});
       showNotice(kind === 'project' ? 'Karin 项目已重置' : '容器已重置');
     } catch (error) {
       if (kind === 'container') {
@@ -262,7 +282,7 @@ export default function App() {
             {activeTab === '控制台' && !filesOpen ? (
               <Pressable
                 accessibilityRole="switch"
-                accessibilityState={{checked: karinRunning}}
+                accessibilityState={{checked: karinRunning, disabled: karinBusy, busy: karinBusy}}
                 accessibilityLabel={karinRunning ? '停止 Karin' : '启动 Karin'}
                 disabled={karinBusy}
                 onPress={handleKarinToggle}

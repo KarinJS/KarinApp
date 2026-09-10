@@ -43,22 +43,37 @@ export function executeStreaming(
   command: string,
   onLine: (line: string) => void,
   timeoutMs: number = DEFAULT_TIMEOUT_MS,
+  signal?: AbortSignal,
 ): Promise<string> {
   const commandId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
   return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new Error('任务已终止'));
+      return;
+    }
     const state = {
       output: '',
       settled: false,
       timer: undefined as ReturnType<typeof setTimeout> | undefined,
       subscription: undefined as EventSubscription | undefined,
+      abortListener: undefined as (() => void) | undefined,
     };
     const finish = (callback: () => void) => {
       if (state.settled) return;
       state.settled = true;
       if (state.timer) clearTimeout(state.timer);
+      if (signal && state.abortListener) signal.removeEventListener('abort', state.abortListener);
       state.subscription?.remove();
       callback();
     };
+    const terminate = (message: string) => finish(() => {
+      prootController.kill(commandId).catch(() => {});
+      reject(new Error(message));
+    });
+    if (signal) {
+      state.abortListener = () => terminate('任务已终止');
+      signal.addEventListener('abort', state.abortListener, {once: true});
+    }
     state.subscription = prootController.subscribe(event => {
       if (event.commandId !== commandId) return;
       if (event.stream === 'stdout' || event.stream === 'stderr') {
@@ -74,10 +89,7 @@ export function executeStreaming(
       }
     });
     state.timer = setTimeout(() => {
-      finish(() => {
-        prootController.kill(commandId).catch(() => {});
-        reject(new Error(`命令执行超时（${timeoutMs}ms），已终止容器内进程`));
-      });
+      terminate(`命令执行超时（${timeoutMs}ms），已终止容器内进程`);
     }, timeoutMs);
     try {
       prootController.execute(command, commandId).catch(error => finish(() => reject(error)));
