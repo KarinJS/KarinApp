@@ -15,432 +15,175 @@ concurrency:
 
 jobs:
   # ============================================================
-  # 1. 使用 Release Please 计算本次应该发布的版本
-  #
-  # 例如：
-  #   当前版本 1.1.0
-  #   fix: xxx
-  #
-  # 得到：
-  #   1.1.1
-  #
-  #   feat: xxx
-  # 得到：
-  #   1.2.0
-  #
-  #   BREAKING CHANGE
-  # 得到：
-  #   2.0.0
-  #
-  # 注意：这里使用 dry-run，不创建 Release、不创建 Tag。
+  # 1. 运行 Release Please 创建 Release / Tag
   # ============================================================
-  determine-version:
-    name: Determine Release Version
+  release-please:
+    name: Release Please
     runs-on: ubuntu-latest
-
     outputs:
-      version: ${{ steps.version.outputs.version }}
-      tag: ${{ steps.version.outputs.tag }}
+      release_created: ${{ steps.release.outputs.release_created }}
+      version: ${{ steps.release.outputs.version }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          fetch-tags: true
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22.11.0
-
-      - name: Determine version with Release Please
-        id: version
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -e
-
-          echo "========================================"
-          echo "Running Release Please in dry-run mode"
-          echo "========================================"
-
-          npx --yes release-please@latest release-pr \
-            --token="$GITHUB_TOKEN" \
-            --repo-url="$GITHUB_REPOSITORY" \
-            --target-branch=main \
-            --release-type=node \
-            --dry-run \
-            2>&1 | tee release-please.log
-
-          echo ""
-          echo "========================================"
-          echo "Extracting release version"
-          echo "========================================"
-
-          # Release Please dry-run 会输出类似：
-          #
-          # title: chore(main): release 1.2.0
-          #
-          # 从中提取 1.2.0
-          VERSION=$(grep -E '^[[:space:]]*title: .*release [0-9]+\.[0-9]+\.[0-9]+' release-please.log \
-            | tail -1 \
-            | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' \
-            | tail -1 || true)
-
-          if [ -z "$VERSION" ]; then
-            echo "::error::Release Please did not determine a release version."
-            echo ""
-            echo "Release Please output:"
-            cat release-please.log
-            exit 1
-          fi
-
-          TAG="v${VERSION}"
-
-          echo "VERSION=$VERSION"
-          echo "TAG=$TAG"
-
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-
-      - name: Show release information
-        run: |
-          echo "========================================"
-          echo "Release version: ${{ steps.version.outputs.version }}"
-          echo "Release tag:     ${{ steps.version.outputs.tag }}"
-          echo "========================================"
-
-
-  # ============================================================
-  # 2. 构建 Android APK
-  #
-  # 只有确定版本成功以后才会执行。
-  # ============================================================
-  build:
-    name: Build Android APK
-    runs-on: ubuntu-latest
-
-    needs:
-      - determine-version
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      # --------------------------------------------------------
-      # Node.js
-      # --------------------------------------------------------
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22.11.0
-
-      # --------------------------------------------------------
-      # pnpm
-      # --------------------------------------------------------
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v4
-        with:
-          version: 9.15.9
-
-      # --------------------------------------------------------
-      # Java
-      # --------------------------------------------------------
-      - name: Setup Java
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: '21'
-
-      # --------------------------------------------------------
-      # Android SDK
-      # --------------------------------------------------------
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
-
-      # --------------------------------------------------------
-      # Android NDK
-      # --------------------------------------------------------
-      - name: Install Android NDK
-        run: |
-          yes | sdkmanager --licenses >/dev/null || true
-
-          sdkmanager \
-            "platform-tools" \
-            "platforms;android-35" \
-            "build-tools;35.0.0" \
-            "ndk;27.1.12297006"
-
-      # --------------------------------------------------------
-      # 安装 JS 依赖
-      # --------------------------------------------------------
-      - name: Install dependencies
-        run: |
-          pnpm install --frozen-lockfile
-
-      # --------------------------------------------------------
-      # 显示版本
-      # --------------------------------------------------------
-      - name: Show release version
-        run: |
-          echo "========================================"
-          echo "Release version: ${{ needs.determine-version.outputs.version }}"
-          echo "Release tag:     ${{ needs.determine-version.outputs.tag }}"
-          echo "APK name:        Karin-${{ needs.determine-version.outputs.version }}.apk"
-          echo "========================================"
-
-      # ========================================================
-      # 3. 准备签名文件
-      # ========================================================
-      - name: Decode Android keystore
-        env:
-          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
-        run: |
-          set -e
-
-          mkdir -p android/app
-
-          echo "$ANDROID_KEYSTORE_BASE64" | base64 --decode > android/app/karin.jks
-
-          test -s android/app/karin.jks
-
-          echo "Keystore prepared."
-
-      # ========================================================
-      # 4. Gradle 构建 Release APK
-      # ========================================================
-      - name: Build Release APK
-        working-directory: android
-        env:
-          RELEASE_VERSION: ${{ needs.determine-version.outputs.version }}
-          KARIN_STORE_FILE: ${{ github.workspace }}/android/app/karin.jks
-          KARIN_STORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
-          KARIN_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
-          KARIN_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
-        run: |
-          set -e
-
-          chmod +x gradlew
-
-          ./gradlew assembleRelease --stacktrace
-
-      # ========================================================
-      # 5. 查找 APK
-      # ========================================================
-      - name: Find APK
-        id: apk
-        run: |
-          set -e
-
-          APK=$(find android/app/build/outputs/apk/release \
-            -type f \
-            -name "*.apk" \
-            | head -n 1)
-
-          if [ -z "$APK" ]; then
-            echo "::error::Release APK was not found."
-            exit 1
-          fi
-
-          echo "APK found:"
-          echo "$APK"
-
-          echo "path=$APK" >> "$GITHUB_OUTPUT"
-
-      # ========================================================
-      # 6. APK 签名验证
-      # ========================================================
-      - name: Verify APK signature
-        env:
-          APK_PATH: ${{ steps.apk.outputs.path }}
-        run: |
-          set -e
-
-          APKSIGNER="$ANDROID_HOME/build-tools/35.0.0/apksigner"
-
-          if [ ! -f "$APKSIGNER" ]; then
-            echo "::error::apksigner not found."
-            exit 1
-          fi
-
-          "$APKSIGNER" verify --verbose "$APK_PATH"
-
-          echo "APK signature verification passed."
-
-      # ========================================================
-      # 7. 重命名 APK
-      # ========================================================
-      - name: Rename APK
-        id: rename
-        env:
-          VERSION: ${{ needs.determine-version.outputs.version }}
-          APK_PATH: ${{ steps.apk.outputs.path }}
-        run: |
-          set -e
-
-          OUTPUT="Karin-${VERSION}.apk"
-
-          cp "$APK_PATH" "$OUTPUT"
-
-          test -s "$OUTPUT"
-
-          echo "output=$OUTPUT" >> "$GITHUB_OUTPUT"
-
-          echo "========================================"
-          echo "APK ready:"
-          echo "$OUTPUT"
-          echo "========================================"
-
-      # ========================================================
-      # 8. 删除签名文件
-      # ========================================================
-      - name: Remove keystore
-        if: always()
-        run: |
-          rm -f android/app/karin.jks
-
-      # ========================================================
-      # 9. 上传 Artifact
-      #
-      # 只有前面的构建、签名验证全部成功才会执行。
-      # ========================================================
-      - name: Upload APK artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: Karin-${{ needs.determine-version.outputs.version }}
-          path: ${{ steps.rename.outputs.output }}
-          if-no-files-found: error
-
-
-  # ============================================================
-  # 10. 构建成功后，正式执行 Release Please
-  #
-  # 这一阶段才真正创建：
-  #
-  #   v1.2.0
-  #
-  # 前面的任何一步失败，这个 Job 都不会执行。
-  # ============================================================
-  release:
-    name: Create GitHub Release
-    runs-on: ubuntu-latest
-
-    needs:
-      - determine-version
-      - build
-
-    if: ${{ needs.build.result == 'success' }}
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      # --------------------------------------------------------
-      # 下载刚刚成功构建的 APK
-      # --------------------------------------------------------
-      - name: Download APK
-        uses: actions/download-artifact@v4
-        with:
-          name: Karin-${{ needs.determine-version.outputs.version }}
-          path: release
-
-      - name: Verify downloaded APK
-        run: |
-          set -e
-
-          APK="release/Karin-${{ needs.determine-version.outputs.version }}.apk"
-
-          if [ ! -f "$APK" ]; then
-            echo "::error::APK not found: $APK"
-            exit 1
-          fi
-
-          test -s "$APK"
-
-          echo "APK:"
-          ls -lh "$APK"
-
-      # --------------------------------------------------------
-      # 真正执行 Release Please
-      #
-      # 这里不使用 skip-github-pull-request。
-      # Release Please 会正式创建 Release / Tag。
-      # --------------------------------------------------------
-      - name: Create Release with Release Please
+      - name: Run Release Please
         id: release
         uses: googleapis/release-please-action@v4
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           release-type: node
           target-branch: main
-          skip-github-pull-request: true
 
-      # --------------------------------------------------------
-      # 检查 Release Please 是否创建了预期版本
-      # --------------------------------------------------------
-      - name: Verify Release
+  # ============================================================
+  # 2. 构建 Android APK (仅当 Release 真正被创建时执行)
+  # ============================================================
+  build:
+    name: Build Android APK
+    runs-on: ubuntu-latest
+
+    needs:
+      - release-please
+
+    if: ${{ needs.release-please.outputs.release_created == 'true' }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.11.0
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.9
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android NDK
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager \
+            "platform-tools" \
+            "platforms;android-35" \
+            "build-tools;35.0.0" \
+            "ndk;27.1.12297006"
+
+      - name: Install dependencies
+        run: |
+          pnpm install --frozen-lockfile
+
+      - name: Show release version
+        run: |
+          echo "========================================"
+          echo "Release version: ${{ needs.release-please.outputs.version }}"
+          echo "Release tag:     ${{ needs.release-please.outputs.tag_name }}"
+          echo "APK name:        Karin-${{ needs.release-please.outputs.version }}.apk"
+          echo "========================================"
+
+      - name: Decode Android keystore
         env:
-          EXPECTED_VERSION: ${{ needs.determine-version.outputs.version }}
-          EXPECTED_TAG: ${{ needs.determine-version.outputs.tag }}
-          RELEASE_CREATED: ${{ steps.release.outputs.release_created }}
-          RELEASE_VERSION: ${{ steps.release.outputs.version }}
-          RELEASE_TAG: ${{ steps.release.outputs.tag_name }}
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
         run: |
           set -e
+          mkdir -p android/app
+          echo "$ANDROID_KEYSTORE_BASE64" | base64 --decode > android/app/karin.jks
+          test -s android/app/karin.jks
 
-          echo "Expected version: $EXPECTED_VERSION"
-          echo "Expected tag:     $EXPECTED_TAG"
-          echo "Release created:  $RELEASE_CREATED"
-          echo "Release version:  $RELEASE_VERSION"
-          echo "Release tag:      $RELEASE_TAG"
+      - name: Build Release APK
+        working-directory: android
+        env:
+          RELEASE_VERSION: ${{ needs.release-please.outputs.version }}
+          KARIN_STORE_FILE: ${{ github.workspace }}/android/app/karin.jks
+          KARIN_STORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KARIN_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KARIN_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -e
+          chmod +x gradlew
+          ./gradlew assembleRelease --stacktrace
 
-          if [ "$RELEASE_CREATED" != "true" ]; then
-            echo "::error::Release Please did not create the expected release."
+      - name: Find APK
+        id: apk
+        run: |
+          set -e
+          APK=$(find android/app/build/outputs/apk/release -type f -name "*.apk" | head -n 1)
+          if [ -z "$APK" ]; then
+            echo "::error::Release APK was not found."
             exit 1
           fi
+          echo "path=$APK" >> "$GITHUB_OUTPUT"
 
-          if [ "$RELEASE_VERSION" != "$EXPECTED_VERSION" ]; then
-            echo "::error::Release version mismatch."
-            echo "Expected: $EXPECTED_VERSION"
-            echo "Actual:   $RELEASE_VERSION"
-            exit 1
-          fi
+      - name: Verify APK signature
+        env:
+          APK_PATH: ${{ steps.apk.outputs.path }}
+        run: |
+          set -e
+          APKSIGNER="$ANDROID_HOME/build-tools/35.0.0/apksigner"
+          "$APKSIGNER" verify --verbose "$APK_PATH"
 
-          if [ "$RELEASE_TAG" != "$EXPECTED_TAG" ]; then
-            echo "::error::Release tag mismatch."
-            echo "Expected: $EXPECTED_TAG"
-            echo "Actual:   $RELEASE_TAG"
-            exit 1
-          fi
+      - name: Rename APK
+        id: rename
+        env:
+          VERSION: ${{ needs.release-please.outputs.version }}
+          APK_PATH: ${{ steps.apk.outputs.path }}
+        run: |
+          set -e
+          OUTPUT="Karin-${VERSION}.apk"
+          cp "$APK_PATH" "$OUTPUT"
+          echo "output=$OUTPUT" >> "$GITHUB_OUTPUT"
 
-      # --------------------------------------------------------
-      # 上传 APK 到 Release
-      # --------------------------------------------------------
-      - name: Upload APK to Release
-        if: ${{ steps.release.outputs.release_created == 'true' }}
+      - name: Remove keystore
+        if: always()
+        run: |
+          rm -f android/app/karin.jks
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Karin-${{ needs.release-please.outputs.version }}
+          path: ${{ steps.rename.outputs.output }}
+          if-no-files-found: error
+
+  # ============================================================
+  # 3. 将 APK 上传到刚刚创建的 GitHub Release 中
+  # ============================================================
+  upload-release:
+    name: Upload APK to Release
+    runs-on: ubuntu-latest
+    needs:
+      - release-please
+      - build
+
+    steps:
+      - name: Download APK artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: Karin-${{ needs.release-please.outputs.version }}
+          path: release
+
+      - name: Upload to GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ steps.release.outputs.tag_name }}
-          VERSION: ${{ steps.release.outputs.version }}
+          TAG: ${{ needs.release-please.outputs.tag_name }}
+          VERSION: ${{ needs.release-please.outputs.version }}
         run: |
           set -e
-
           APK="release/Karin-${VERSION}.apk"
-
           test -f "$APK"
-
-          gh release upload \
-            "$TAG" \
-            "$APK" \
-            --clobber
-
-          echo "========================================"
-          echo "Release completed."
-          echo "Tag: $TAG"
-          echo "APK: Karin-${VERSION}.apk"
-          echo "========================================"
+          gh release upload "$TAG" "$APK" --clobber
+          echo "Successfully uploaded $APK to release $TAG"
