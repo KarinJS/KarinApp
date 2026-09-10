@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.0.2](https://github.com/KarinJS/KarinApp/compare/v1.0.1...v1.0.2) (2026-09-10)
+
+
+### Bug Fixes
+
+* 1 ([03a0123](https://github.com/KarinJS/KarinApp/commit/03a01238f658c85b6b74509dd04d3c2f053612d9))
+* cli ([ff116c0](https://github.com/KarinJS/KarinApp/commit/ff116c0e260a74f7356776e9cf75a2c2a034bf80))
+* cli ([27ba151](https://github.com/KarinJS/KarinApp/commit/27ba15172dd4b30e856956222f7c1230db1671ae))
+* 签名 ([2f67e36](https://github.com/KarinJS/KarinApp/commit/2f67e36887e7a9ce6d04738e7c7357bb6047741a))
+
 ## [1.0.1](https://github.com/KarinJS/KarinApp/compare/v1.0.0...v1.0.1) (2026-09-10)
 
 
