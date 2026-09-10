@@ -1,0 +1,116 @@
+name: Build APK
+
+on:
+  release:
+    types:
+      - published
+
+permissions:
+  contents: write
+
+concurrency:
+  group: android-release-${{ github.event.release.tag_name }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build signed APK
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out release
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name }}
+          fetch-depth: 0
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.9
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.11.0
+          cache: pnpm
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android NDK
+        run: |
+          sdkmanager --install "ndk;27.1.12297006"
+
+      - name: Install dependencies
+        run: |
+          pnpm install --frozen-lockfile
+
+      - name: Check project
+        run: |
+          pnpm exec tsc --noEmit
+          pnpm exec eslint . --no-cache
+
+      - name: Prepare Android signing key
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > android/app/karin.jks
+
+      - name: Build signed release APK
+        working-directory: android
+        env:
+          KARIN_STORE_FILE: karin.jks
+          KARIN_STORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KARIN_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KARIN_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          ./gradlew assembleRelease --stacktrace
+
+      - name: Verify APK
+        run: |
+          apk="android/app/build/outputs/apk/release/app-release.apk"
+
+          apksigner="$(
+            find "$ANDROID_HOME/build-tools" \
+              -type f \
+              -name apksigner \
+              | sort -V \
+              | tail -n 1
+          )"
+
+          "$apksigner" verify --print-certs "$apk"
+
+      - name: Rename APK
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          apk="android/app/build/outputs/apk/release/app-release.apk"
+
+          mv "$apk" "Karin-${version}.apk"
+
+      - name: Remove signing key
+        if: always()
+        run: |
+          rm -f android/app/karin.jks
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Karin-${{ github.event.release.tag_name }}.apk
+          path: Karin-${{ github.event.release.tag_name }}.apk
+          if-no-files-found: error
+
+      - name: Upload APK to GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload \
+            "${{ github.event.release.tag_name }}" \
+            "Karin-${GITHUB_REF_NAME#v}.apk" \
+            --clobber
