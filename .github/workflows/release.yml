@@ -159,7 +159,7 @@ jobs:
           path: ${{ steps.rename.outputs.output }}
           if-no-files-found: error
 
-  # ============================================================
+# ============================================================
   # 3. 将 APK 上传到刚刚创建的 GitHub Release 中
   # ============================================================
   upload-release:
@@ -170,6 +170,10 @@ jobs:
       - build
 
     steps:
+      # 【新增】检出代码，提供 .git 仓库上下文供 gh CLI 使用
+      - name: Checkout
+        uses: actions/checkout@v4
+
       - name: Download APK artifact
         uses: actions/download-artifact@v4
         with:
