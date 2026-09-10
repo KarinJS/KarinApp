@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.3](https://github.com/KarinJS/KarinApp/compare/v1.0.2...v1.0.3) (2026-09-10)
+
+
+### Bug Fixes
+
+* cli ([358ece2](https://github.com/KarinJS/KarinApp/commit/358ece2a6725ab947fe8284762b30dbeec806e44))
+
 ## [1.0.2](https://github.com/KarinJS/KarinApp/compare/v1.0.1...v1.0.2) (2026-09-10)
 
 
