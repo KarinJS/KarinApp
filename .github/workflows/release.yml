@@ -215,8 +215,11 @@ jobs:
       - name: Build Release APK
         working-directory: android
         env:
-          RELEASE_VERSION: ${{ needs.determine-version.outputs.version }}
-          KEYSTORE_PASSWORD: ${{ secrets.APPSTOREPASSWORD }}
+  RELEASE_VERSION: ${{ needs.determine-version.outputs.version }}
+  KARIN_STORE_FILE: ${{ github.workspace }}/android/app/karin.jks
+  KARIN_STORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+  KARIN_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+  KARIN_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
           set -e
 
