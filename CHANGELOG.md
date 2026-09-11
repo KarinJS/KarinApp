@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.1.2](https://github.com/KarinJS/KarinApp/compare/v1.1.1...v1.1.2) (2026-09-11)
+
+
+### Bug Fixes
+
+* 控制台支持颜色渲染 ([d93b589](https://github.com/KarinJS/KarinApp/commit/d93b5892144de39652a8c6b688934f01d4b85bd6))
+* 新增关于，软件更新 ([4de4dcf](https://github.com/KarinJS/KarinApp/commit/4de4dcfca10a3199eb980a959259fe1c567c418b))
+
 ## [1.1.1](https://github.com/KarinJS/KarinApp/compare/v1.1.0...v1.1.1) (2026-09-11)
 
 
