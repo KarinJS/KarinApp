@@ -7,6 +7,8 @@ import com.facebook.react.bridge.ReactContextBaseJavaModule
 import com.facebook.react.bridge.ReactMethod
 import com.facebook.react.modules.core.DeviceEventManagerModule
 import android.os.Build
+import android.system.Os
+import android.system.OsConstants
 import java.io.BufferedOutputStream
 import java.io.DataInputStream
 import java.io.DataOutputStream
@@ -85,31 +87,16 @@ class ProotModule(private val context: ReactApplicationContext) : ReactContextBa
 
   @ReactMethod
   fun stop(force: Boolean, promise: Promise) = runAsync(promise, "PROOT_STOP_FAILED") {
-    val keeper: Process?
-    synchronized(lock) {
-      keeper = keeperProcess
-      keeperProcess = null
-      val writer = keeperWriter
-      keeperWriter = null
-      if (!force) {
-        runCatching { writer?.let { sendFrameLocked(it, FrameWriter().u8(IpcProtocol.REQ_QUIT).toByteArray()) } }
-      }
-    }
-    if (!force && keeper != null && !keeper.waitFor(4, TimeUnit.SECONDS)) terminate(keeper)
-    else keeper?.let(::terminate)
+    stopKeeper(force)
     "stopped"
   }
 
   /** 重置容器：强制终止 keeper 进程，删除已解包的 rootfs，下次启动重新解包。 */
   @ReactMethod
   fun reset(promise: Promise) = runAsync(promise, "PROOT_RESET_FAILED") {
-    val keeper: Process?
-    synchronized(lock) {
-      keeper = keeperProcess
-      keeperProcess = null
-      keeperWriter = null
-    }
-    keeper?.let(::terminate)
+    stopKeeper(true)
+    // proot 被强杀时 tracee 不会跟着退出，删除目录前先清掉仍占用 rootfs 的残留进程。
+    killProcessesUsing(rootfs.rootDir())
     rootfs.reset()
     runtime.clearHardlinkCache()
     "reset"
@@ -279,10 +266,68 @@ class ProotModule(private val context: ReactApplicationContext) : ReactContextBa
     if (!process.waitFor(2, TimeUnit.SECONDS)) { process.destroyForcibly(); process.waitFor(2, TimeUnit.SECONDS) }
   }
 
+  /**
+   * 停止 keeper 进程（proot）。容器内守护进程的 stdin 就是 keeper 的 stdin 管道：关闭它会让
+   * 守护进程读到 EOF 后杀掉所有子进程并退出，proot 随之正常退出并回收 tracee；force 时不再等待。
+   */
+  private fun stopKeeper(force: Boolean) {
+    val keeper: Process?
+    val writer: DataOutputStream?
+    synchronized(lock) {
+      keeper = keeperProcess
+      writer = keeperWriter
+      keeperProcess = null
+      keeperWriter = null
+    }
+    if (keeper == null) {
+      runCatching { writer?.close() }
+      return
+    }
+    if (!force) {
+      runCatching { writer?.let { sendFrameLocked(it, FrameWriter().u8(IpcProtocol.REQ_QUIT).toByteArray()) } }
+    }
+    // 关闭 stdin：即使 QUIT 帧丢失，守护进程读到 EOF 后也会杀掉子进程并退出。
+    runCatching { writer?.close() }
+    if (!force && keeper.waitFor(GRACEFUL_STOP_TIMEOUT_MS, TimeUnit.MILLISECONDS)) return
+    terminate(keeper)
+    keeper.waitFor(FORCE_STOP_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+  }
+
+  /**
+   * 兜底：强杀所有以容器目录（含子目录）为工作目录的进程。
+   *
+   * proot 被强杀时 tracee 不会跟着退出；只要还有进程以 rootfs 内的目录为工作目录，
+   * 删除容器目录就会失败，所以删除前先把它们清掉。
+   */
+  private fun killProcessesUsing(root: java.io.File) {
+    val pids = pidsWithCwdUnder(root)
+    pids.forEach { pid -> runCatching { Os.kill(pid, OsConstants.SIGKILL) } }
+    val deadline = System.currentTimeMillis() + FORCE_STOP_TIMEOUT_MS
+    while (pidsWithCwdUnder(root).isNotEmpty() && System.currentTimeMillis() < deadline) Thread.sleep(50)
+  }
+
+  /** 找出工作目录位于 rootfs 内（含 rootfs 自身）的同 UID 进程 pid。 */
+  private fun pidsWithCwdUnder(root: java.io.File): List<Int> {
+    val rootPath = root.absolutePath.trimEnd('/')
+    return java.io.File("/proc").listFiles()?.mapNotNull { entry ->
+      entry.name.toIntOrNull()?.takeIf { pid ->
+        val cwd = try { java.io.File("/proc/$pid/cwd").canonicalPath } catch (_: Exception) { return@takeIf false }
+        cwd == rootPath || cwd.startsWith("$rootPath/")
+      }
+    } ?: emptyList()
+  }
+
   private fun <T> runAsync(promise: Promise, code: String, block: () -> T) {
     Thread { try { promise.resolve(block()) } catch (error: Exception) { promise.reject(code, error) } }
       .apply { isDaemon = true; name = "karin-proot-native" }.start()
   }
 
   private fun detail(output: String) = if (output.isBlank()) "" else ": $output"
+
+  private companion object {
+    /** 非强制停止时等待容器内进程自行退出的时间。 */
+    const val GRACEFUL_STOP_TIMEOUT_MS = 4000L
+    /** 强杀后等待进程退出的最长时间。 */
+    const val FORCE_STOP_TIMEOUT_MS = 2000L
+  }
 }

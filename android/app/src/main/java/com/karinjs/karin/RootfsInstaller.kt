@@ -23,15 +23,18 @@ internal fun chmod(file: File, mode: Int) {
  */
 internal class RootfsInstaller(private val context: Context) {
 
+  /** 容器根目录路径（仅返回路径，不触发解包）。 */
+  fun rootDir(): File = File(context.filesDir, "debian-rootfs")
+
   /** 返回可用的容器根目录；首次调用或目录不完整时执行解包。 */
   fun ensureContainer(): File {
-    val root = File(context.filesDir, "debian-rootfs")
+    val root = rootDir()
     val marker = File(root, ".karin-ready")
     val required = listOf("etc/os-release", "bin/sh", "usr/bin/env")
     if (marker.isFile && required.all { File(root, it).isFile }) return root
     synchronized(extractLock) {
       if (marker.isFile && required.all { File(root, it).isFile }) return root
-      if (root.exists() && !root.deleteRecursively()) throw IllegalStateException("无法清理未完成的容器目录")
+      if (root.exists() && !deleteContainerDir(root)) throw IllegalStateException("无法清理未完成的容器目录")
       if (!root.mkdirs()) throw IllegalStateException("无法创建容器目录")
       val archive = File(context.cacheDir, "debian.tar.xz")
       try {
@@ -51,10 +54,23 @@ internal class RootfsInstaller(private val context: Context) {
 
   /** 删除已解包的容器根目录（含 .karin-ready 标记），下次 ensureContainer 会重新解包。 */
   fun reset() {
-    val root = File(context.filesDir, "debian-rootfs")
+    val root = rootDir()
     synchronized(extractLock) {
-      if (root.exists() && !root.deleteRecursively()) throw IllegalStateException("无法删除容器目录")
+      if (root.exists() && !deleteContainerDir(root)) throw IllegalStateException("无法删除容器目录")
     }
+  }
+
+  /**
+   * 删除容器根目录。容器内进程（proot tracee）可能在退出前仍以 rootfs 内的目录为工作目录，
+   * 此时 rmdir 会失败；等待进程退出的空档很短，所以这里带退避重试，而不是立刻报错。
+   */
+  private fun deleteContainerDir(root: File): Boolean {
+    repeat(DELETE_ATTEMPTS) { attempt ->
+      if (!root.exists()) return true
+      if (root.deleteRecursively()) return true
+      if (attempt < DELETE_ATTEMPTS - 1) Thread.sleep(DELETE_RETRY_DELAY_MS * (attempt + 1))
+    }
+    return !root.exists()
   }
 
   private fun extractRootfs(archive: File, root: File) {
@@ -115,5 +131,7 @@ internal class RootfsInstaller(private val context: Context) {
 
   private companion object {
     val extractLock = Any()
+    const val DELETE_ATTEMPTS = 5
+    const val DELETE_RETRY_DELAY_MS = 200L
   }
 }
