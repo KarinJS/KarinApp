@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.1.1](https://github.com/KarinJS/KarinApp/compare/v1.1.0...v1.1.1) (2026-09-11)
+
+
+### Bug Fixes
+
+* 修复重置容器第一次必失败的问题 ([66946d3](https://github.com/KarinJS/KarinApp/commit/66946d3134c0292b619c2104f954499dbbaf7245))
+* 修改加载页的图标，以及跳过加载 ([87f7e9d](https://github.com/KarinJS/KarinApp/commit/87f7e9d23b3b64b25bceb1465d9c802768d10113))
+
 ## [1.1.0](https://github.com/KarinJS/KarinApp/compare/v1.0.3...v1.1.0) (2026-09-11)
 
 
