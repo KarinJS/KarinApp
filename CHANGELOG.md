@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.0](https://github.com/KarinJS/KarinApp/compare/v1.0.3...v1.1.0) (2026-09-11)
+
+
+### Features
+
+* 新增查看运行日志功能 ([7d167a7](https://github.com/KarinJS/KarinApp/commit/7d167a74c3e3b59aeb71e5983f2313f1e1c8d079))
+
 ## [1.0.3](https://github.com/KarinJS/KarinApp/compare/v1.0.2...v1.0.3) (2026-09-10)
 
 
