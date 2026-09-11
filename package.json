@@ -5,13 +5,11 @@
   "scripts": {
     "postinstall": "node scripts/ensure-hermes.js",
     "android": "react-native run-android",
-    "ios": "react-native run-ios",
     "lint": "eslint .",
     "start": "react-native start --host 0.0.0.0",
     "test": "jest"
   },
   "dependencies": {
-    "@react-native/new-app-screen": "0.87.0",
     "highlight.js": "10.7.3",
     "lowlight": "1.20.0",
     "lucide-react-native": "^1.33.0",
@@ -27,7 +25,6 @@
     "@babel/runtime": "^7.25.0",
     "@react-native-community/cli": "20.2.0",
     "@react-native-community/cli-platform-android": "20.2.0",
-    "@react-native-community/cli-platform-ios": "20.2.0",
     "@react-native/babel-preset": "0.87.0",
     "@react-native/codegen": "0.87.0",
     "@react-native/eslint-config": "0.87.0",

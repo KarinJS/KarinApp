@@ -140,8 +140,12 @@ class ProotModule(private val context: ReactApplicationContext) : ReactContextBa
     }
   }
 
+  /**
+   * 在容器内执行命令。interactive=true 时守护进程为子进程保留一条 stdin 管道，
+   * 之后可用 [write] 向它发送数据（node-karin 的控制台输入读 process.stdin）。
+   */
   @ReactMethod
-  fun execute(command: String, commandId: String, promise: Promise) {
+  fun execute(command: String, commandId: String, interactive: Boolean, promise: Promise) {
     val id = if (commandId.isBlank()) synchronized(lock) { (++commandCounter).toString() } else commandId
     val idBytes = id.toByteArray(Charsets.UTF_8)
     val cmdBytes = command.toByteArray(Charsets.UTF_8)
@@ -150,7 +154,9 @@ class ProotModule(private val context: ReactApplicationContext) : ReactContextBa
       return
     }
     try {
-      val frame = FrameWriter().u8(IpcProtocol.REQ_EXEC).u16(idBytes.size).bytes(idBytes).u32(cmdBytes.size).bytes(cmdBytes).toByteArray()
+      val writer = FrameWriter().u8(IpcProtocol.REQ_EXEC).u16(idBytes.size).bytes(idBytes).u32(cmdBytes.size).bytes(cmdBytes)
+      if (interactive) writer.u8(IpcProtocol.EXEC_FLAG_STDIN)
+      val frame = writer.toByteArray()
       synchronized(lock) { sendFrameLocked(keeperWriter ?: throw IllegalStateException("proot 容器未运行"), frame) }
       promise.resolve(id)
     } catch (error: Exception) {
@@ -168,6 +174,24 @@ class ProotModule(private val context: ReactApplicationContext) : ReactContextBa
       promise.resolve(commandId)
     } catch (error: Exception) {
       promise.reject("PROOT_KILL_FAILED", error)
+    }
+  }
+
+  /** 向 interactive 命令的 stdin 写入原始字节（不做 shell 转义），仅该命令可读。 */
+  @ReactMethod
+  fun write(commandId: String, data: String, promise: Promise) {
+    val idBytes = commandId.toByteArray(Charsets.UTF_8)
+    val dataBytes = data.toByteArray(Charsets.UTF_8)
+    if (idBytes.size > 0xffff) {
+      promise.reject("PROOT_WRITE_FAILED", IllegalStateException("命令 ID 过长"))
+      return
+    }
+    try {
+      val frame = FrameWriter().u8(IpcProtocol.REQ_WRITE).u16(idBytes.size).bytes(idBytes).u32(dataBytes.size).bytes(dataBytes).toByteArray()
+      synchronized(lock) { sendFrameLocked(keeperWriter ?: throw IllegalStateException("proot 容器未运行"), frame) }
+      promise.resolve(commandId)
+    } catch (error: Exception) {
+      promise.reject("PROOT_WRITE_FAILED", error)
     }
   }
 

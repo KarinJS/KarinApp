@@ -18,7 +18,7 @@ jobs:
   # 1. 运行 Release Please 创建 Release / Tag
   # ============================================================
   release-please:
-    name: Release Please
+    name: 创建Release
     runs-on: ubuntu-latest
     outputs:
       release_created: ${{ steps.release.outputs.release_created }}
@@ -41,7 +41,7 @@ jobs:
   # 2. 构建 Android APK (仅当 Release 真正被创建时执行)
   # ============================================================
   build:
-    name: Build Android APK
+    name: 编译APK
     runs-on: ubuntu-latest
 
     needs:
@@ -50,7 +50,7 @@ jobs:
     if: ${{ needs.release-please.outputs.release_created == 'true' }}
 
     steps:
-      - name: Checkout
+      - name: 检出代码
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
@@ -163,7 +163,7 @@ jobs:
   # 3. 将 APK 上传到刚刚创建的 GitHub Release 中
   # ============================================================
   upload-release:
-    name: Upload APK to Release
+    name: 上传APK到release
     runs-on: ubuntu-latest
     needs:
       - release-please

@@ -2,12 +2,12 @@ import type {ComponentType} from 'react';
 import {Home, Puzzle, Settings} from 'lucide-react-native';
 import type {Tab} from '../types';
 
-export type TabIconProps = {
+type TabIconProps = {
   size?: number | string;
   color?: string;
 };
 
-export type TabItem = {
+type TabItem = {
   label: Tab;
   icon: ComponentType<TabIconProps>;
 };

@@ -77,9 +77,9 @@ async function ensureContainerRunning({pushStage, emit}: ProgressToolkit) {
   pushStage('proot 容器已运行');
 }
 
-/** 在已运行的容器内检查并安装运行环境（node/npm/pnpm/node-karin，幂等）。 */
+/** 在已运行的容器内准备 Karin 运行环境（幂等）。 */
 async function installEnvironmentWithProgress({pushStage, pushLog, emit}: ProgressToolkit) {
-  let phase = '正在检查运行环境';
+  let phase = '正在准备运行环境';
   pushStage(phase);
   emit('environment', phase, 0.84);
   await installEnvironment({

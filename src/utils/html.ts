@@ -23,7 +23,7 @@ const namedEntities: Record<string, string> = {
   rdquo: '\u201d',
 };
 
-export function decodeHtmlEntities(value: string): string {
+function decodeHtmlEntities(value: string): string {
   return value.replace(/&(?:#x([0-9a-f]+)|#(\d+)|([a-z\d]+));/gi, (match, hex, decimal, name) => {
     if (hex) return String.fromCodePoint(parseInt(hex, 16));
     if (decimal) return String.fromCodePoint(parseInt(decimal, 10));

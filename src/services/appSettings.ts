@@ -1,10 +1,11 @@
 import {executeAndCollect} from './prootController';
+import {shellQuote} from '../utils/shell';
 
 /** 应用设置放在容器里，跟着容器持久化，重装 App 也不会丢 */
 const SETTINGS_DIR = '/root/.karinapp';
 const SETTINGS_PATH = `${SETTINGS_DIR}/settings.json`;
 
-export type AppSettings = {
+type AppSettings = {
   /** GitHub 加速前缀（例如 https://ghfast.top/），空字符串表示直连 */
   githubProxy: string;
 };
@@ -14,8 +15,6 @@ const DEFAULT_SETTINGS: AppSettings = {githubProxy: ''};
 let cache: AppSettings = {...DEFAULT_SETTINGS};
 let loaded = false;
 let loading: Promise<AppSettings> | null = null;
-
-const shellQuote = (value: string) => `'${value.replace(/'/g, `'\\''`)}'`;
 
 /** 统一成带协议、带结尾斜杠的前缀，方便直接拼在原链接前面 */
 export const normalizeGithubProxy = (value: string) => {
@@ -44,8 +43,6 @@ export const proxiedUrl = (url: string) => {
   if (!cache.githubProxy || !GITHUB_URL.test(url)) return url;
   return `${cache.githubProxy}${url}`;
 };
-
-export const getGithubProxy = () => cache.githubProxy;
 
 const readSettings = async (): Promise<AppSettings> => {
   const output = await executeAndCollect(`cat ${shellQuote(SETTINGS_PATH)} 2>/dev/null || true`);

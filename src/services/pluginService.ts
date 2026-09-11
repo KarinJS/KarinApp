@@ -1,9 +1,10 @@
 import {executeAndCollect, executeStreaming} from './prootController';
 import {proxiedUrl} from './appSettings';
+import {shellQuote} from '../utils/shell';
 
 export type PluginType = 'npm' | 'git' | 'app';
 
-export type PluginRepository = {
+type PluginRepository = {
   type?: string;
   url?: string;
   branch?: string;
@@ -43,7 +44,7 @@ export type PluginDetails = {
 };
 
 /** karin-plugin-example 目录里的实际文件 */
-export type AppPluginFileState = {
+type AppPluginFileState = {
   name: string;
   hash: string;
   /** 通过哈希匹配出的归属插件名，匹配不到就是外来文件 */
@@ -55,14 +56,14 @@ export type PluginSnapshot = {
   appDirFiles: AppPluginFileState[];
 };
 
-export type InstallOptions = {
+type InstallOptions = {
   /** app 插件：只安装选中的文件 */
   files?: PluginFile[];
   /** app 插件：同名冲突时换个文件名落地，key 是原文件名 */
   renames?: Record<string, string>;
 };
 
-export type RemoveOptions = {
+type RemoveOptions = {
   /** 指定要删除的文件名，用于 karin-plugin-example 目录条目 */
   appFiles?: string[];
 };
@@ -121,7 +122,7 @@ const readCategories = (item: any): string[] => {
 };
 
 /** 官方插件：市场标了 official，或者包名/仓库属于 KarinJS 官方 */
-export const isOfficialPlugin = (plugin: Plugin) => {
+const isOfficialPlugin = (plugin: Plugin) => {
   if (plugin.categories?.includes('official')) return true;
   if (/^@karinjs\//i.test(plugin.name)) return true;
   const urls = [plugin.homepage, ...(plugin.repo ?? []).map(repository => repository.url)];
@@ -135,8 +136,6 @@ export const pluginCategoryIds = (plugin: Plugin) => {
   if (isOfficialPlugin(plugin) && !ids.includes('official')) ids.unshift('official');
   return ids;
 };
-
-const shellQuote = (value: string) => `'${value.replace(/'/g, `'\\''`)}'`;
 
 const pluginPath = (plugin: Plugin) => {
   const segments = plugin.name.split('/');
@@ -156,7 +155,7 @@ let cache: Plugin[] | null = null;
 const detailCache = new Map<string, PluginDetails>();
 
 const PLUGIN_LIST_URL = 'https://registry.npmjs.org/@karinjs/plugins-list/latest';
-export async function fetchPlugins(force = false): Promise<Plugin[]> {
+async function fetchPlugins(force = false): Promise<Plugin[]> {
   if (cache && !force) return cache;
   const raw = await fetch(PLUGIN_LIST_URL).then(response => { if (!response.ok) throw new Error(`插件列表请求失败 (${response.status})`); return response.json(); });
   const source = Array.isArray(raw) ? raw : raw.plugins ?? raw.list ?? raw.data ?? [];
@@ -195,19 +194,6 @@ export const appPluginFileName = (url: string) => appFileName(url);
 /** app 插件的文件列表（过滤掉没有直链的项） */
 export const appPluginFiles = (plugin: Plugin) =>
   (plugin.files ?? []).filter((file): file is PluginFile & {url: string} => typeof file.url === 'string' && Boolean(file.url));
-
-/** app 插件文件落地后的文件名列表 */
-export const appPluginFileNames = (plugin: Plugin) =>
-  appPluginFiles(plugin).flatMap(file => {
-    try {
-      return [appFileName(file.url)];
-    } catch {
-      return [];
-    }
-  });
-
-/** app 插件目录里现有的文件名 */
-export const appPluginDirFiles = (snapshot: PluginSnapshot) => snapshot.appDirFiles;
 
 type DirFile = {name: string; hash: string};
 
@@ -429,7 +415,7 @@ const gitInstallCommand = (plugin: Plugin) => {
 };
 
 /** app 插件的下载计划：目标文件名可以由用户选择改名 */
-export const appInstallPlan = (plugin: Plugin, options: InstallOptions = {}) => {
+const appInstallPlan = (plugin: Plugin, options: InstallOptions = {}) => {
   const files = options.files ?? plugin.files;
   const plan = appPluginFiles({...plugin, files}).flatMap(file => {
     let name = '';
@@ -455,7 +441,7 @@ const appInstallCommand = (plan: {finalUrl: string; target: string}[]) => {
 };
 
 /** 卸载：只删指定的文件，绝不整目录删除 */
-export const appRemoveCommand = (names: string[]) => {
+const appRemoveCommand = (names: string[]) => {
   const path = appPluginPath();
   const safe = names.filter(isSafeFileName);
   if (!safe.length) throw new Error('没有可卸载的 APP 插件文件');

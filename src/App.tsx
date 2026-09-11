@@ -15,11 +15,13 @@ import DashboardScreen from './screens/DashboardScreen';
 import FileManagerScreen from './screens/FileManagerScreen';
 import PluginsScreen from './screens/PluginsScreen';
 import SettingsScreen from './screens/SettingsScreen';
+import TerminalScreen from './screens/TerminalScreen';
 import {karinService} from './services/karinService';
 import {loadAppSettings} from './services/appSettings';
+import {appendKarinLog, startKarinLogCapture} from './services/karinLogService';
 import {foregroundService, requestNotificationPermission} from './services/foregroundService';
 import {prootController} from './services/prootController';
-import {inspectEnvironment, switchKarinVersion} from './services/environmentService';
+import {getInstalledKarinVersion, switchKarinVersion} from './services/environmentService';
 import {openLogLocation, saveStartupLog} from './services/logService';
 import {getStartupLog, resetContainerEnvironment, resetKarinProjectEnvironment, runStartupTasks} from './startup/startupTasks';
 import type {StartupProgress} from './startup/startupTasks';
@@ -55,13 +57,14 @@ export default function App() {
   const [containerBusy, setContainerBusy] = useState(false);
   const [karinBusy, setKarinBusy] = useState(false);
   const [filesOpen, setFilesOpen] = useState(false);
+  const [terminalOpen, setTerminalOpen] = useState(false);
   const [resetConfirm, setResetConfirm] = useState<'project' | 'container' | null>(null);
   const [resetProgress, setResetProgress] = useState<StartupProgress | null>(null);
   const [resetError, setResetError] = useState('');
 
   const refreshKarinVersion = () =>
-    inspectEnvironment()
-      .then(env => setKarinVersion(env.karin))
+    getInstalledKarinVersion()
+      .then(setKarinVersion)
       .catch(() => {});
 
   const boot = () => {
@@ -95,6 +98,8 @@ export default function App() {
   };
 
   useEffect(() => {
+    /** 日志捕获在 App 挂载时就启动，日志页打开之前的历史才不会丢。 */
+    startKarinLogCapture();
     boot();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -135,7 +140,6 @@ export default function App() {
         showNotice('Karin 已停止');
       } else {
         const notificationAllowed = await requestNotificationPermission();
-        console.log(`[KarinDiag] notificationAllowed=${notificationAllowed}`);
         if (notificationAllowed) await foregroundService.start();
         else showNotice('未授予通知权限，Karin 已启动，但后台保活能力会降低');
         try {
@@ -144,6 +148,7 @@ export default function App() {
           await foregroundService.stop().catch(() => {});
           throw error;
         }
+        appendKarinLog('=== 已启动 Karin');
         showNotice('Karin 已启动');
       }
     } catch (error) {
@@ -253,7 +258,13 @@ export default function App() {
             </View>
 
             <View style={styles.content}>
-              {filesOpen && activeTab === '控制台' ? (
+              {terminalOpen && activeTab === '控制台' ? (
+                <TerminalScreen
+                  colors={colors}
+                  karinRunning={karinRunning}
+                  onBack={() => setTerminalOpen(false)}
+                />
+              ) : filesOpen && activeTab === '控制台' ? (
                 <FileManagerScreen colors={colors} onBack={() => setFilesOpen(false)} />
               ) : activeTab === '控制台' ? (
                 <DashboardScreen
@@ -262,7 +273,7 @@ export default function App() {
                   karinSeconds={karinSeconds}
                   memoryBytes={karinMemoryBytes}
                   onOpenFiles={() => setFilesOpen(true)}
-                  onAction={showNotice}
+                  onOpenLogs={() => setTerminalOpen(true)}
                 />
               ) : activeTab === '设置' ? (
                 <SettingsScreen
@@ -279,7 +290,7 @@ export default function App() {
 
             {notice ? <Toast message={notice} colors={colors} /> : null}
 
-            {activeTab === '控制台' && !filesOpen ? (
+            {activeTab === '控制台' && !filesOpen && !terminalOpen ? (
               <Pressable
                 accessibilityRole="switch"
                 accessibilityState={{checked: karinRunning, disabled: karinBusy, busy: karinBusy}}
@@ -297,7 +308,7 @@ export default function App() {
               </Pressable>
             ) : null}
 
-            <BottomNav activeTab={activeTab} colors={colors} onSelect={tab => { setFilesOpen(false); setActiveTab(tab); }} />
+            <BottomNav activeTab={activeTab} colors={colors} onSelect={tab => { setFilesOpen(false); setTerminalOpen(false); setActiveTab(tab); }} />
           </View>
         )}
 

@@ -1,10 +1,10 @@
 import {EventSubscription} from 'react-native';
 import {executeAndCollect, prootController} from './prootController';
 
-export type KarinProbeResult = {running: boolean; memoryBytes: number};
+type KarinProbeResult = {running: boolean; memoryBytes: number};
 
-/** karin 长驻进程在 prootController 中的固定 commandId，kill/订阅都以此为准。 */
-const FIXED_ID = 'karin-service';
+/** karin 长驻进程在 prootController 中的固定 commandId，kill/日志订阅都以此为准。 */
+export const KARIN_COMMAND_ID = 'karin-service';
 const START_COMMAND = 'cd /root/karin && node index.mjs';
 const PROBE_TIMEOUT_MS = 10_000;
 const STOP_TIMEOUT_MS = 8_000;
@@ -48,26 +48,26 @@ async function probe(): Promise<KarinProbeResult> {
     const parsed: unknown = JSON.parse(lines[lines.length - 1]);
     if (typeof parsed !== 'object' || parsed === null) throw new Error('探针输出格式错误');
     const result = parsed as Partial<KarinProbeResult>;
-    const parsedResult = {
+    return {
       running: result.running === true,
       memoryBytes: typeof result.memoryBytes === 'number' ? result.memoryBytes : 0,
     };
-    console.log(`[KarinDiag] probe ok running=${parsedResult.running} mem=${parsedResult.memoryBytes}`);
-    return parsedResult;
   } catch {
     // 容器未运行、命令超时等情况一律视为未运行
-    console.log('[KarinDiag] probe failed -> running=false');
     return {running: false, memoryBytes: 0};
   }
 }
 
 async function start(): Promise<void> {
-  const status = await probe();
-  console.log(`[KarinDiag] start() probe running=${status.running}`);
-  if (status.running) return;
-  await prootController.execute(START_COMMAND, FIXED_ID);
+  if ((await probe()).running) return;
+  /** interactive：守护进程保留 stdin 管道，控制台输入才能送进 node-karin。 */
+  await prootController.execute(START_COMMAND, KARIN_COMMAND_ID, true);
   startedAt = Date.now();
-  console.log(`[KarinDiag] start() exec sent at ${startedAt}`);
+}
+
+/** 向 Karin 控制台发送一行输入；node-karin 通过 process.stdin 的 data 事件接收。 */
+function sendInput(text: string): Promise<string> {
+  return prootController.write(KARIN_COMMAND_ID, text.endsWith('\n') ? text : `${text}\n`);
 }
 
 function stop(): Promise<void> {
@@ -86,11 +86,11 @@ function stop(): Promise<void> {
       resolve();
     };
     state.subscription = prootController.subscribe(event => {
-      if (event.commandId === FIXED_ID && event.stream === 'exit') finish();
+      if (event.commandId === KARIN_COMMAND_ID && event.stream === 'exit') finish();
     });
     // 兜底：exit 事件丢失时不至于一直挂起
     state.timer = setTimeout(finish, STOP_TIMEOUT_MS);
-    prootController.kill(FIXED_ID).catch(() => finish());
+    prootController.kill(KARIN_COMMAND_ID).catch(() => finish());
   });
 }
 
@@ -101,12 +101,11 @@ function getStartedAt(): number | null {
 /** 订阅 karin 进程退出事件；触发时清除 startedAt，返回取消订阅函数。 */
 function subscribeExit(callback: () => void): () => void {
   const subscription = prootController.subscribe(event => {
-    if (event.commandId !== FIXED_ID || event.stream !== 'exit') return;
-    console.log(`[KarinDiag] exit event id=${FIXED_ID} code=${event.exitCode} aliveMs=${startedAt ? Date.now() - startedAt : -1}`);
+    if (event.commandId !== KARIN_COMMAND_ID || event.stream !== 'exit') return;
     startedAt = null;
     callback();
   });
   return () => subscription.remove();
 }
 
-export const karinService = {start, stop, probe, getStartedAt, subscribeExit};
+export const karinService = {start, stop, probe, getStartedAt, subscribeExit, sendInput};

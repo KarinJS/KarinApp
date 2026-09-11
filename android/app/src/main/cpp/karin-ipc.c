@@ -5,7 +5,7 @@
  * Binary framed protocol over stdin/stdout, all integers big-endian:
  *   every frame: u32 payloadLen | payload
  *   App -> daemon:
- *     u8 type=1 EXEC: u16 idLen | id | u32 cmdLen | cmd
+ *     u8 type=1 EXEC: u16 idLen | id | u32 cmdLen | cmd | u8 flags(bit0 = keep stdin pipe)
  *     u8 type=2 KILL: u16 idLen | id
  *     u8 type=3 QUIT: none
  *   daemon -> App:
@@ -41,6 +41,10 @@
 #define REQ_EXEC 1
 #define REQ_KILL 2
 #define REQ_QUIT 3
+#define REQ_WRITE 4
+
+/* EXEC flags: keep the child stdin pipe open so WRITE frames can feed it. */
+#define EXEC_FLAG_STDIN 1
 
 #define RESP_OUT 1
 #define RESP_EXIT 2
@@ -53,6 +57,8 @@
 #define MAX_LINE (1u << 20)    /* single output line cap, split when exceeded */
 #define MAX_CHILDREN 64
 #define READ_CHUNK 4096
+/* Queued stdin bytes per child; a child that stops reading must not grow this forever. */
+#define MAX_STDIN_BUFFER (256u * 1024u)
 
 /* One child output pipe (stdout or stderr) with its partial-line buffer. */
 typedef struct {
@@ -66,6 +72,11 @@ typedef struct {
 typedef struct {
   char *id;
   pid_t pid;
+  int in_fd;             /* child stdin write end; -1 when the child has no pipe */
+  unsigned char *in_buf; /* bytes accepted by WRITE but not yet written to in_fd */
+  size_t in_len;
+  size_t in_off;
+  size_t in_cap;
   pipe_t out; /* stdout */
   pipe_t err; /* stderr */
 } child_t;
@@ -260,8 +271,62 @@ static child_t *find_slot(void) {
   return NULL;
 }
 
-static void spawn_child(const char *id, const char *cmd) {
+/* Matches a live child by the raw id bytes carried in a WRITE frame. */
+static child_t *find_child_by_id(const unsigned char *id, size_t id_len) {
+  for (int i = 0; i < MAX_CHILDREN; i++) {
+    child_t *c = &g_children[i];
+    if (c->pid && strlen(c->id) == id_len && memcmp(c->id, id, id_len) == 0) return c;
+  }
+  return NULL;
+}
+
+static child_t *find_by_stdin_fd(int fd) {
+  for (int i = 0; i < MAX_CHILDREN; i++) {
+    child_t *c = &g_children[i];
+    if (c->pid && c->in_fd == fd) return c;
+  }
+  return NULL;
+}
+
+/* Drains queued stdin bytes into the child. Non-blocking so a child that is not
+ * reading never stalls the daemon; EPIPE means the child is gone or closed
+ * stdin, so the pipe is dropped. */
+static void flush_stdin(child_t *c) {
+  while (c->in_fd >= 0 && c->in_off < c->in_len) {
+    ssize_t n = write(c->in_fd, c->in_buf + c->in_off, c->in_len - c->in_off);
+    if (n < 0) {
+      if (errno == EINTR) continue;
+      if (errno == EAGAIN) return;
+      close(c->in_fd);
+      c->in_fd = -1;
+      c->in_off = 0;
+      c->in_len = 0;
+      break;
+    }
+    if (n == 0) return;
+    c->in_off += (size_t)n;
+  }
+  if (c->in_off >= c->in_len) {
+    c->in_off = 0;
+    c->in_len = 0;
+  }
+}
+
+static void close_stdin(child_t *c) {
+  if (c->in_fd >= 0) {
+    close(c->in_fd);
+    c->in_fd = -1;
+  }
+  free(c->in_buf);
+  c->in_buf = NULL;
+  c->in_len = 0;
+  c->in_off = 0;
+  c->in_cap = 0;
+}
+
+static void spawn_child(const char *id, const char *cmd, int keep_stdin) {
   int fail_code = 127;
+  int in_pipe[2] = {-1, -1};
   int out_pipe[2] = {-1, -1};
   int err_pipe[2] = {-1, -1};
   pid_t pid = -1;
@@ -272,17 +337,23 @@ static void spawn_child(const char *id, const char *cmd) {
   }
   if (pipe(out_pipe) < 0) goto fail;
   if (pipe(err_pipe) < 0) goto fail;
+  if (keep_stdin && pipe(in_pipe) < 0) goto fail;
   pid = fork();
   if (pid < 0) goto fail;
   if (pid == 0) {
-    /* Child: own process group, stdout/stderr piped back, stdin /dev/null. */
+    /* Child: own process group, stdout/stderr piped back; stdin is the pipe
+     * kept for WRITE frames, or /dev/null when the app has nothing to send. */
     setpgid(0, 0);
     dup2(out_pipe[1], 1);
     dup2(err_pipe[1], 2);
-    int devnull = open("/dev/null", O_RDONLY);
-    if (devnull >= 0) {
-      dup2(devnull, 0);
-      if (devnull > 2) close(devnull);
+    if (in_pipe[0] >= 0) {
+      dup2(in_pipe[0], 0);
+    } else {
+      int devnull = open("/dev/null", O_RDONLY);
+      if (devnull >= 0) {
+        dup2(devnull, 0);
+        if (devnull > 2) close(devnull);
+      }
     }
     close(out_pipe[0]);
     close(out_pipe[1]);
@@ -298,6 +369,11 @@ static void spawn_child(const char *id, const char *cmd) {
   out_pipe[1] = -1;
   close(err_pipe[1]);
   err_pipe[1] = -1;
+  if (in_pipe[1] >= 0) {
+    close(in_pipe[0]);
+    in_pipe[0] = -1;
+    fcntl(in_pipe[1], F_SETFL, O_NONBLOCK);
+  }
   fcntl(out_pipe[0], F_SETFL, O_NONBLOCK);
   fcntl(err_pipe[0], F_SETFL, O_NONBLOCK);
   child_t *c = find_slot();
@@ -309,12 +385,16 @@ static void spawn_child(const char *id, const char *cmd) {
   memset(c, 0, sizeof(*c));
   c->id = strdup(id);
   c->pid = pid;
+  c->in_fd = in_pipe[1];
+  in_pipe[1] = -1;
   c->out.fd = out_pipe[0];
   c->err.fd = err_pipe[0];
   g_child_count++;
   return;
 
 fail:
+  if (in_pipe[0] >= 0) close(in_pipe[0]);
+  if (in_pipe[1] >= 0) close(in_pipe[1]);
   if (out_pipe[0] >= 0) close(out_pipe[0]);
   if (out_pipe[1] >= 0) close(out_pipe[1]);
   if (err_pipe[0] >= 0) close(err_pipe[0]);
@@ -349,6 +429,7 @@ static int reap_children(void) {
                   : (WIFSIGNALED(status) ? 128 + WTERMSIG(status) : 1);
       if (send_exit(c->id, (uint32_t)code) < 0) return -1;
     }
+    close_stdin(c);
     free(c->id);
     free(c->out.line);
     free(c->err.line);
@@ -364,6 +445,7 @@ static void shutdown_all(void) {
     if (!c->pid) continue;
     killpg(c->pid, SIGKILL);
     waitpid(c->pid, NULL, 0);
+    close_stdin(c);
     free(c->id);
     free(c->out.line);
     free(c->err.line);
@@ -386,6 +468,9 @@ static void handle_exec(const unsigned char *body, uint32_t body_len) {
   off += 4;
   if ((uint32_t)off + cmd_len > body_len) return;
   const char *cmd = (const char *)body + off;
+  off += cmd_len;
+  /* Optional trailing flags byte; frames without it keep the old behaviour. */
+  uint8_t flags = off < body_len ? body[off] : 0;
 
   char *id_copy = (char *)malloc((size_t)id_len + 1);
   char *cmd_copy = (char *)malloc((size_t)cmd_len + 1);
@@ -398,7 +483,7 @@ static void handle_exec(const unsigned char *body, uint32_t body_len) {
   id_copy[id_len] = '\0';
   memcpy(cmd_copy, cmd, cmd_len);
   cmd_copy[cmd_len] = '\0';
-  spawn_child(id_copy, cmd_copy);
+  spawn_child(id_copy, cmd_copy, (flags & EXEC_FLAG_STDIN) != 0);
   free(id_copy);
   free(cmd_copy);
 }
@@ -415,6 +500,28 @@ static void handle_kill(const unsigned char *body, uint32_t body_len) {
   free(id);
 }
 
+/* Queues bytes for a child started with EXEC_FLAG_STDIN; silently ignored for
+ * children without a stdin pipe or when the queue is already full. */
+static void handle_write(const unsigned char *body, uint32_t body_len) {
+  if (body_len < 2) return;
+  uint16_t id_len = get_be16(body);
+  uint32_t off = 2;
+  if ((uint32_t)off + id_len + 4 > body_len) return;
+  const unsigned char *id = body + off;
+  off += id_len;
+  uint32_t data_len = get_be32(body + off);
+  off += 4;
+  if ((uint32_t)off + data_len > body_len || data_len == 0) return;
+
+  child_t *c = find_child_by_id(id, id_len);
+  if (!c || c->in_fd < 0) return;
+  if (c->in_len - c->in_off + data_len > MAX_STDIN_BUFFER) return;
+  if (ensure_cap(&c->in_buf, &c->in_cap, c->in_len + data_len) < 0) return;
+  memcpy(c->in_buf + c->in_len, body + off, data_len);
+  c->in_len += data_len;
+  flush_stdin(c);
+}
+
 static void handle_frame(uint8_t type, const unsigned char *body, uint32_t body_len) {
   switch (type) {
     case REQ_QUIT:
@@ -425,6 +532,9 @@ static void handle_frame(uint8_t type, const unsigned char *body, uint32_t body_
       break;
     case REQ_KILL:
       handle_kill(body, body_len);
+      break;
+    case REQ_WRITE:
+      handle_write(body, body_len);
       break;
     default:
       break;
@@ -487,7 +597,7 @@ int main(void) {
       g_quit = 1;
       break;
     }
-    struct pollfd fds[MAX_CHILDREN * 2 + 1];
+    struct pollfd fds[MAX_CHILDREN * 3 + 1];
     nfds_t nfds = 0;
     fds[nfds].fd = STDIN_FILENO;
     fds[nfds].events = POLLIN;
@@ -505,6 +615,13 @@ int main(void) {
           nfds++;
         }
       }
+      /* Only ask for writability while stdin bytes are actually queued. */
+      if (c->in_fd >= 0 && c->in_off < c->in_len) {
+        fds[nfds].fd = c->in_fd;
+        fds[nfds].events = POLLOUT;
+        fds[nfds].revents = 0;
+        nfds++;
+      }
     }
     int r = poll(fds, nfds, 1000);
     if (r < 0) {
@@ -513,9 +630,14 @@ int main(void) {
     }
     if (r == 0) continue;
     for (nfds_t i = 0; i < nfds; i++) {
-      if (!(fds[i].revents & (POLLIN | POLLHUP | POLLERR))) continue;
+      if (fds[i].revents == 0) continue;
       if (fds[i].fd == STDIN_FILENO) {
         handle_stdin();
+        continue;
+      }
+      child_t *writer = find_by_stdin_fd(fds[i].fd);
+      if (writer) {
+        flush_stdin(writer);
         continue;
       }
       pipe_t *p;

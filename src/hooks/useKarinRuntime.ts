@@ -23,7 +23,6 @@ export function useKarinRuntime(containerRunning: boolean) {
     const refresh = () => {
       karinService.probe().then(result => {
         if (cancelled) return;
-        console.log(`[KarinDiag] poll setRunning(${result.running})`);
         setRunning(result.running);
         setMemoryBytes(result.memoryBytes);
         if (!result.running) setSeconds(0);
@@ -37,10 +36,7 @@ export function useKarinRuntime(containerRunning: boolean) {
     };
   }, [containerRunning]);
 
-  useEffect(() => karinService.subscribeExit(() => {
-    console.log('[KarinDiag] exit subscription -> setRunning(false)');
-    setRunning(false);
-  }), []);
+  useEffect(() => karinService.subscribeExit(() => setRunning(false)), []);
 
   useEffect(() => {
     if (!running) return;

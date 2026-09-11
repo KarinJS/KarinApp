@@ -1,13 +1,10 @@
 import {executeAndCollect, executeStreaming} from './prootController';
 
-export type EnvironmentVersions = {node: string[]; npm: string[]; pnpm: string[]; karin: string[]};
-
-export type EnvironmentInstallHandlers = {
+type EnvironmentInstallHandlers = {
   onPhase: (phase: string) => void;
   onLog: (line: string) => void;
 };
 
-type InstalledVersions = {node: string; npm: string; pnpm: string; karin: string};
 type PhaseHandler = (phase: string) => void;
 type LogHandler = (line: string) => void;
 
@@ -15,19 +12,10 @@ const PROBE_TIMEOUT_MS = 6_000;
 const INSTALL_STEP_TIMEOUT_MS = 15 * 60 * 1000;
 const PACKAGE_STEP_TIMEOUT_MS = 5 * 60 * 1000;
 
-const NODE_TARGET_MAJOR = 24;
-const PNPM_TARGET_PREFIX = '9.';
-
-const NODE_INSTALL_COMMAND = [
-  'apt-get update',
-  'apt-get install -y curl xz-utils',
-  'curl -fsSL https://nodejs.org/dist/v24.0.0/node-v24.0.0-linux-arm64.tar.xz -o /tmp/node.tar.xz',
-  'tar -xJf /tmp/node.tar.xz -C /usr/local --strip-components=1',
-  'rm -f /tmp/node.tar.xz',
-].join(' && ');
-const NPM_INSTALL_COMMAND = 'npm install -g npm@latest';
-const PNPM_INSTALL_COMMAND = 'npm install -g pnpm@9';
+/** 容器已预装 Node.js/npm/pnpm 与 curl、ca-certificates、xz-utils，启动时只刷新 apt 索引。 */
+const APT_UPDATE_COMMAND = 'apt-get update';
 const KARIN_DIR = '/root/karin';
+const KARIN_VERSION_PROBE = `node -p 'require("${KARIN_DIR}/node_modules/node-karin/package.json").version' 2>/dev/null`;
 /** node-karin init 生成的标志文件；init 内部的 pnpm install -f 会重建 node_modules，绝不能重复执行。 */
 const KARIN_INIT_MARKERS = [`${KARIN_DIR}/index.mjs`, `${KARIN_DIR}/.env`];
 
@@ -51,22 +39,14 @@ async function checkShell(command: string): Promise<boolean> {
 const isKarinInstalled = () => checkShell(`test -f ${KARIN_DIR}/node_modules/node-karin/package.json`);
 const isKarinInitialized = () => checkShell(KARIN_INIT_MARKERS.map(file => `test -f ${file}`).join(' && '));
 
-export async function inspectEnvironment(): Promise<InstalledVersions> {
-  const probe = async (command: string) => {
-    try {
-      const output = await executeAndCollect(command, PROBE_TIMEOUT_MS);
-      return output.trim().replace(/^v/, '');
-    } catch {
-      return '';
-    }
-  };
-  const [node, npm, pnpm, karin] = await Promise.all([
-    probe('node --version 2>/dev/null'),
-    probe('npm --version 2>/dev/null'),
-    probe('pnpm --version 2>/dev/null'),
-    probe("node -p 'require(\"/root/karin/node_modules/node-karin/package.json\").version' 2>/dev/null"),
-  ]);
-  return {node, npm, pnpm, karin};
+/** 读取容器内已安装的 node-karin 版本，读不到时返回空字符串。 */
+export async function getInstalledKarinVersion(): Promise<string> {
+  try {
+    const output = await executeAndCollect(KARIN_VERSION_PROBE, PROBE_TIMEOUT_MS);
+    return output.trim().replace(/^v/, '');
+  } catch {
+    return '';
+  }
 }
 
 async function runStreaming(command: string, onLog: LogHandler, timeoutMs: number) {
@@ -82,44 +62,6 @@ async function runStreaming(command: string, onLog: LogHandler, timeoutMs: numbe
   );
 }
 
-const nodeMajor = (version: string) => Number(version.split('.')[0]);
-
-/** 检查 Node.js；缺失或低于目标版本时自动安装，并返回刷新后的环境信息。 */
-async function ensureNode(current: InstalledVersions, onPhase: PhaseHandler, onLog: LogHandler): Promise<InstalledVersions> {
-  if (current.node && nodeMajor(current.node) >= NODE_TARGET_MAJOR) {
-    onLog(`node --version -> v${current.node}`);
-    return current;
-  }
-  onPhase(`正在安装 Node.js (v${NODE_TARGET_MAJOR}.0.0)`);
-  await runStreaming(NODE_INSTALL_COMMAND, onLog, INSTALL_STEP_TIMEOUT_MS);
-  onPhase('Node.js 安装完成');
-  return inspectEnvironment();
-}
-
-/** 检查 npm；缺失时自动安装，并返回刷新后的环境信息。 */
-async function ensureNpm(current: InstalledVersions, onPhase: PhaseHandler, onLog: LogHandler): Promise<InstalledVersions> {
-  if (current.npm) {
-    onLog(`npm --version -> ${current.npm}`);
-    return current;
-  }
-  onPhase('正在安装 npm');
-  await runStreaming(NPM_INSTALL_COMMAND, onLog, PACKAGE_STEP_TIMEOUT_MS);
-  onPhase('npm 安装完成');
-  return inspectEnvironment();
-}
-
-/** 检查 pnpm；缺失或不是目标大版本时自动安装。 */
-async function ensurePnpm(current: InstalledVersions, onPhase: PhaseHandler, onLog: LogHandler): Promise<InstalledVersions> {
-  if (current.pnpm && current.pnpm.startsWith(PNPM_TARGET_PREFIX)) {
-    onLog(`pnpm --version -> ${current.pnpm}`);
-    return current;
-  }
-  onPhase('正在安装 pnpm');
-  await runStreaming(PNPM_INSTALL_COMMAND, onLog, PACKAGE_STEP_TIMEOUT_MS);
-  onPhase('pnpm 安装完成');
-  return current;
-}
-
 /**
  * 强制 pnpm 使用复制模式。pnpm 默认把 store 里的文件硬链接进 node_modules，
  * 但 Android 应用私有目录被 SELinux 禁止创建硬链接，proot 的 link2symlink
@@ -131,10 +73,20 @@ async function ensurePnpmCopyMode(onLog: LogHandler) {
   onLog('pnpm 已配置为复制模式（package-import-method=copy）');
 }
 
+/** 刷新 apt 索引；失败只记录日志，不阻塞启动（依赖包已预装在 rootfs 中）。 */
+async function refreshAptIndex(onLog: LogHandler) {
+  try {
+    await executeAndCollect(APT_UPDATE_COMMAND, PACKAGE_STEP_TIMEOUT_MS);
+    onLog('apt 索引已刷新');
+  } catch {
+    onLog('apt 索引刷新失败，跳过（预装依赖不受影响）');
+  }
+}
+
 /** 准备 /root/karin：仅在未安装时安装 node-karin，仅在未初始化时执行 init（两者都可安全重复进入）。 */
-async function prepareKarin(current: InstalledVersions, onPhase: PhaseHandler, onLog: LogHandler) {
-  if (current.karin || (await isKarinInstalled())) {
-    onLog(`node-karin 已安装${current.karin ? `（v${current.karin}）` : ''}，跳过安装`);
+async function prepareKarin(installedKarin: string, onPhase: PhaseHandler, onLog: LogHandler) {
+  if (installedKarin || (await isKarinInstalled())) {
+    onLog(`node-karin 已安装${installedKarin ? `（v${installedKarin}）` : ''}，跳过安装`);
   } else {
     if (await checkShell(`test -d ${KARIN_DIR}/node_modules`)) {
       // node-karin 读不到但 node_modules 存在：多为 proot link2symlink 影子链损坏的残留，
@@ -191,12 +143,10 @@ export async function reinstallKarinProject({onPhase, onLog}: EnvironmentInstall
 }
 
 export async function installEnvironment({onPhase, onLog}: EnvironmentInstallHandlers) {
-  let current = await inspectEnvironment();
-  current = await ensureNode(current, onPhase, onLog);
-  current = await ensureNpm(current, onPhase, onLog);
-  await ensurePnpm(current, onPhase, onLog)
+  onPhase('正在刷新软件源索引');
+  await refreshAptIndex(onLog);
   await ensurePnpmCopyMode(onLog);
-  await prepareKarin(current, onPhase, onLog);
-  const final = await inspectEnvironment();
-  onLog(`Node.js ${final.node || '-'} / npm ${final.npm || '-'} / pnpm ${final.pnpm || '-'} / node-karin ${final.karin || '-'}`);
+  await prepareKarin(await getInstalledKarinVersion(), onPhase, onLog);
+  const installedKarin = await getInstalledKarinVersion();
+  onLog(`node-karin ${installedKarin || '-'}`);
 }

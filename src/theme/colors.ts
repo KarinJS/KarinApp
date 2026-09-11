@@ -1,6 +1,6 @@
 import {useColorScheme} from 'react-native';
 
-export const lightColors = {
+const lightColors = {
   background: '#FFF5F7',
   surface: '#FFFFFF',
   text: '#2B1F24',
@@ -22,7 +22,7 @@ export const lightColors = {
   powerActiveBorder: '#FFB8C9',
 };
 
-export const darkColors = {
+const darkColors = {
   background: '#1A1216',
   surface: '#251B20',
   text: '#F6F0F2',

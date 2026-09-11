@@ -17,7 +17,7 @@ type Props = {
 const STEPS: {stage: StartupStage; label: string; detail: string}[] = [
   {stage: 'container', label: '初始化 proot 容器', detail: '首次启动时准备 Debian 文件系统'},
   {stage: 'proot', label: '启动 proot 容器', detail: '建立移动端运行环境'},
-  {stage: 'environment', label: '检查运行环境', detail: '准备 Node.js、npm、pnpm 与 Karin'},
+  {stage: 'environment', label: '准备运行环境', detail: '准备 Karin 运行环境'},
 ];
 
 export default function StartupScreen({colors, progress, error, logPath, onRetry, onOpenLog}: Props) {

@@ -1,6 +1,6 @@
-import {DeviceEventEmitter, EventSubscription, NativeModules, } from 'react-native';
+import {DeviceEventEmitter, EventSubscription, NativeModules} from 'react-native';
 
-export type ProotCommandEvent = {
+type ProotCommandEvent = {
   commandId: string;
   stream: 'stdout' | 'stderr' | 'exit';
   data: string;
@@ -11,8 +11,9 @@ type NativeProotController = {
   start: () => Promise<string>;
   stop: (force: boolean) => Promise<string>;
   status: () => Promise<string>;
-  execute: (command: string, commandId: string) => Promise<string>;
+  execute: (command: string, commandId: string, interactive: boolean) => Promise<string>;
   kill: (commandId: string) => Promise<string>;
+  write: (commandId: string, data: string) => Promise<string>;
 };
 
 const native = NativeModules.KarinProot as NativeProotController;
@@ -21,8 +22,11 @@ export const prootController = {
   start: () => native.start(),
   stop: (force = false) => native.stop(force),
   status: () => native.status(),
-  execute: (command: string, commandId = `${Date.now()}`) => native.execute(command, commandId),
+  execute: (command: string, commandId = `${Date.now()}`, interactive = false) =>
+    native.execute(command, commandId, interactive),
   kill: (commandId: string) => native.kill(commandId),
+  /** 向以 interactive 方式启动的命令写入 stdin；仅该命令能收到。 */
+  write: (commandId: string, data: string) => native.write(commandId, data),
   subscribe(listener: (event: ProotCommandEvent) => void): EventSubscription {
     return DeviceEventEmitter.addListener('KarinProotCommand', listener);
   },

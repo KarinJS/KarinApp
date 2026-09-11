@@ -1,114 +1,48 @@
-This is a new [**React Native**](https://reactnative.dev) project, bootstrapped using [`@react-native-community/cli`](https://github.com/react-native-community/cli).
-# Project Structure
+# Karin App
 
-The app source lives under `src/`:
+在 Android 手机上运行 [Karin](https://github.com/KarinJS/Karin) 。不用电脑、不用服务器，装好 App 就能把机器人跑起来。
 
-```
-src/
-  App.tsx           Composition root: providers, global state, boot flow, modals
-  components/       Reusable UI: StartupScreen, BottomNav, Toast, dialogs
-  screens/          Tab screens: DashboardScreen, PluginsScreen, SettingsScreen
-  hooks/            Shared state hooks: container status, Karin runtime, toast
-  services/         Native/proot boundaries: prootController, environmentService
-  startup/          Boot pipeline shown behind the splash screen
-  theme/            Light/dark color palettes and shared styles
-  constants/        Tab navigation configuration
-  types/            Shared domain types (Tab, ContainerState)
-```
+## App 能做什么
 
+- **一键启动 Karin**：右下角电源键启动/停止，实时显示运行时长与内存占用
+- **内置插件市场**：按分类浏览，直接安装、卸载，插件说明（README）在 App 内渲染
+- **切换 Karin 版本**：在设置里查看已装版本并随时切换
+- **改配置文件**：内置文件管理，直接浏览和编辑容器里的 `/root/karin`（配置、插件数据都能改）
+- **自动准备环境**：容器解包、Node.js、依赖安装全部自动完成，首次启动后无需再操心
+- **后台保活**：Karin 运行时可保持在后台，不被系统随手回收
 
-# Getting Started
+## 开始使用
 
-> **Note**: Make sure you have completed the [Set Up Your Environment](https://reactnative.dev/docs/set-up-your-environment) guide before proceeding.
+1. **安装**：从 [Releases](https://github.com/KarinJS/KarinApp/releases) 下载 APK 安装（仅支持 **arm64** 手机）。
+2. **首次启动**：等它自动准备容器和运行环境，需要联网，耗时取决于网速，界面会显示进度和日志。
+3. **启动 Karin**：进入「控制台」，点右下角电源键。首次会申请通知权限——允许它，Karin 才能在后台稳定运行。
+4. **装插件**：打开「插件」页，用分类和「全部 / 已安装 / 未安装」筛选，点安装即可。要接入平台，记得装对应的**适配器**插件。
+5. **改配置**：需要改账号、协议端等配置时，用「控制台 → 文件管理」编辑 `/root/karin` 下的文件。
 
-## Step 1: Start Metro
+> 国内网络建议：进「设置」把 **NPM 源** 切到淘宝源；如果装插件时卡在 GitHub，可以填一个 **GitHub 加速前缀**（例如 `https://gh-proxy.com/`，留空表示直连）。
 
-First, you will need to run **Metro**, the JavaScript build tool for React Native.
+## 界面一览
 
-To start the Metro dev server, run the following command from the root of your React Native project:
+- **控制台**：Karin 运行状态、内存占用、右上角容器状态（点开可优雅重启 / 强制重启）、右下角电源开关、文件管理入口
+- **插件**：插件市场与已安装管理
+- **设置**：Karin 版本切换、NPM 源、GitHub 加速，以及「重置 Karin 项目」「重置容器」两个危险操作
 
-```sh
-# Using npm
-npm start
+## 常见问题
 
-# OR using Yarn
-yarn start
-```
+- **启动失败 / 一直转圈**：首次启动需要联网下载运行环境，检查网络后点「重试」；失败时可以把完整日志保存到 Download 目录再看。
+- **Karin 停止后就不动了**：请允许通知权限，否则后台保活能力会下降。
+- **机器人没反应**：先确认首页显示 Karin 正在运行，再检查适配器插件是否装好、配置是否填对。
+- **想从头再来**：「重置 Karin 项目」只清空 `/root/karin`（插件和配置会丢）；「重置容器」会重装整个 Debian 环境，耗时更长。
+- **终端入口**：目前还是占位功能，暂不可用。
 
-## Step 2: Build and run your app
+## 开发者
 
-With Metro running, open a new terminal window/pane from the root of your React Native project, and use one of the following commands to build and run your Android or iOS app:
-
-### Android
+技术栈：React Native 0.87 + React 19 + TypeScript，原生侧用 proot 跑 Debian bookworm (arm64) 容器。
 
 ```sh
-# Using npm
-npm run android
-
-# OR using Yarn
-yarn android
+pnpm install        # 安装依赖
+npm start           # 启动 Metro
+npm run android     # 构建并安装到已连接的 arm64 真机
+npx tsc --noEmit    # 类型检查
+npm run lint -- --no-cache
 ```
-
-### iOS
-
-For iOS, remember to install CocoaPods dependencies (this only needs to be run on first clone or after updating native deps).
-
-The first time you create a new project, run the Ruby bundler to install CocoaPods itself:
-
-```sh
-bundle install
-```
-
-Then, and every time you update your native dependencies, run:
-
-```sh
-bundle exec pod install
-```
-
-For more information, please visit [CocoaPods Getting Started guide](https://guides.cocoapods.org/using/getting-started.html).
-
-```sh
-# Using npm
-npm run ios
-
-# OR using Yarn
-yarn ios
-```
-
-If everything is set up correctly, you should see your new app running in the Android Emulator, iOS Simulator, or your connected device.
-
-This is one way to run your app — you can also build it directly from Android Studio or Xcode.
-
-## Step 3: Modify your app
-
-Now that you have successfully run the app, let's make changes!
-
-Open `App.tsx` in your text editor of choice and make some changes. When you save, your app will automatically update and reflect these changes — this is powered by [Fast Refresh](https://reactnative.dev/docs/fast-refresh).
-
-When you want to forcefully reload, for example to reset the state of your app, you can perform a full reload:
-
-- **Android**: Press the <kbd>R</kbd> key twice or select **"Reload"** from the **Dev Menu**, accessed via <kbd>Ctrl</kbd> + <kbd>M</kbd> (Windows/Linux) or <kbd>Cmd ⌘</kbd> + <kbd>M</kbd> (macOS).
-- **iOS**: Press <kbd>R</kbd> in iOS Simulator.
-
-## Congratulations! :tada:
-
-You've successfully run and modified your React Native App. :partying_face:
-
-### Now what?
-
-- If you want to add this new React Native code to an existing application, check out the [Integration guide](https://reactnative.dev/docs/integration-with-existing-apps).
-- If you're curious to learn more about React Native, check out the [docs](https://reactnative.dev/docs/getting-started).
-
-# Troubleshooting
-
-If you're having issues getting the above steps to work, see the [Troubleshooting](https://reactnative.dev/docs/troubleshooting) page.
-
-# Learn More
-
-To learn more about React Native, take a look at the following resources:
-
-- [React Native Website](https://reactnative.dev) - learn more about React Native.
-- [Getting Started](https://reactnative.dev/docs/environment-setup) - an **overview** of React Native and how setup your environment.
-- [Learn the Basics](https://reactnative.dev/docs/getting-started) - a **guided tour** of the React Native **basics**.
-- [Blog](https://reactnative.dev/blog) - read the latest official React Native **Blog** posts.
-- [`@facebook/react-native`](https://github.com/facebook/react-native) - the Open Source; GitHub **repository** for React Native.
