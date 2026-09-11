@@ -289,6 +289,7 @@ export default function App() {
               {terminalOpen && activeTab === '控制台' ? (
                 <TerminalScreen
                   colors={colors}
+                  dark={dark}
                   karinRunning={karinRunning}
                   onBack={() => setTerminalOpen(false)}
                 />

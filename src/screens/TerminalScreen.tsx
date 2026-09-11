@@ -21,9 +21,11 @@ import {
   subscribeKarinLog,
 } from '../services/karinLogService';
 import {Colors} from '../theme/colors';
+import {ansiSegmentStyle} from '../utils/ansi';
 
 type Props = {
   colors: Colors;
+  dark: boolean;
   karinRunning: boolean;
   onBack: () => void;
 };
@@ -38,8 +40,8 @@ function lineColor(stream: KarinLogStream, colors: Colors): string {
   return colors.text;
 }
 
-/** Karin 运行日志：实时滚动，长按用系统选择菜单复制，底部输入直接送进 node-karin 的控制台。 */
-export default function TerminalScreen({colors, karinRunning, onBack}: Props) {
+/** Karin 运行日志：实时滚动，保留 log4js 的 ANSI 颜色，长按用系统选择菜单复制。 */
+export default function TerminalScreen({colors, dark, karinRunning, onBack}: Props) {
   const [lines, setLines] = useState<KarinLogLine[]>(() => getKarinLogLines());
   const [input, setInput] = useState('');
   const [follow, setFollow] = useState(true);
@@ -109,7 +111,11 @@ export default function TerminalScreen({colors, karinRunning, onBack}: Props) {
         contentContainerStyle={styles.listContent}
         renderItem={({item}) => (
           <Text selectable style={[styles.line, {color: lineColor(item.stream, colors)}]}>
-            {item.text}
+            {item.segments.map((segment, index) => (
+              <Text key={index} style={ansiSegmentStyle(segment, dark)}>
+                {segment.text}
+              </Text>
+            ))}
           </Text>
         )}
         onContentSizeChange={handleContentSizeChange}
