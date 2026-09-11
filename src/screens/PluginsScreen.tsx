@@ -34,6 +34,7 @@ import {
 } from 'lucide-react-native';
 import DraggableFab from '../components/DraggableFab';
 import {GithubIcon, NpmIcon} from '../components/BrandIcons';
+import LogConsole from '../components/LogConsole';
 import MarkdownView from '../components/MarkdownView';
 import {Colors} from '../theme/colors';
 import {loadAppSettings} from '../services/appSettings';
@@ -246,11 +247,7 @@ function TaskCard({
         ) : null}
       </View>
       {expanded ? (
-        <View style={[styles.logContainer, {borderColor: colors.border}]}>
-          <ScrollView nestedScrollEnabled style={styles.logScroll}>
-            <Text style={[styles.log, {color: colors.muted}]}>{task.logs.join('\n') || '等待输出…'}</Text>
-          </ScrollView>
-        </View>
+        <LogConsole colors={colors} logs={task.logs} />
       ) : null}
     </View>
   );
@@ -1122,9 +1119,6 @@ const styles = StyleSheet.create({
   stopButtonText: {color: '#fff', fontSize: 11, fontWeight: '700'},
   chevron: {transform: [{rotate: '0deg'}]},
   chevronExpanded: {transform: [{rotate: '180deg'}]},
-  logContainer: {marginTop: 10, paddingTop: 8, borderTopWidth: StyleSheet.hairlineWidth},
-  logScroll: {maxHeight: 180},
-  log: {fontFamily: 'monospace', fontSize: 11},
   detailSheet: {height: '78%', width: '100%', padding: 16, borderTopLeftRadius: 16, borderTopRightRadius: 16},
   filePickerSheet: {width: '100%', padding: 16, borderTopLeftRadius: 16, borderTopRightRadius: 16},
   filePickerHint: {fontSize: 11, marginTop: 4, marginBottom: 4},

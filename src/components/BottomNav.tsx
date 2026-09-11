@@ -4,6 +4,9 @@ import {TABS} from '../constants/navigation';
 import {Colors} from '../theme/colors';
 import type {Tab} from '../types';
 
+/** 底部导航高度；首页的 Toast 就浮在它上方，子页面用它换算同样的高度 */
+export const BOTTOM_NAV_HEIGHT = 72;
+
 type Props = {
   activeTab: Tab;
   colors: Colors;
@@ -29,7 +32,7 @@ export default function BottomNav({activeTab, colors, onSelect}: Props) {
 }
 
 const styles = StyleSheet.create({
-  nav: {height: 72, borderTopWidth: 1, flexDirection: 'row', paddingBottom: 4},
+  nav: {height: BOTTOM_NAV_HEIGHT, borderTopWidth: 1, flexDirection: 'row', paddingBottom: 4},
   item: {flex: 1, alignItems: 'center', justifyContent: 'center', gap: 4},
   label: {fontSize: 11, fontWeight: '700'},
 });

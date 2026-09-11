@@ -18,6 +18,7 @@ class MainApplication : Application(), ReactApplication {
           // add(MyReactNativePackage())
           add(ProotPackage())
           add(LogPackage())
+          add(UpdaterPackage())
         },
     )
   }

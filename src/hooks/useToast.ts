@@ -6,7 +6,7 @@ export function useToast() {
   const [notice, setNotice] = useState('');
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const showNotice = useCallback((message: string) => {
+  const showNotice = useCallback((message: string, durationMs: number = NOTICE_DURATION_MS) => {
     if (timer.current) {
       clearTimeout(timer.current);
     }
@@ -14,7 +14,7 @@ export function useToast() {
     timer.current = setTimeout(() => {
       setNotice(current => (current === message ? '' : current));
       timer.current = null;
-    }, NOTICE_DURATION_MS);
+    }, durationMs);
   }, []);
 
   useEffect(

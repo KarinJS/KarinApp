@@ -24,6 +24,7 @@ import {prootController} from './services/prootController';
 import {getInstalledKarinVersion, switchKarinVersion} from './services/environmentService';
 import {openLogLocation, saveStartupLog} from './services/logService';
 import {getStartupLog, resetContainerEnvironment, resetKarinProjectEnvironment, runStartupTasks} from './startup/startupTasks';
+import {cleanupDownloadedApk} from './services/updateService';
 import type {StartupProgress} from './startup/startupTasks';
 import {useAppColors} from './theme/colors';
 import type {Tab} from './types';
@@ -124,6 +125,8 @@ export default function App() {
   useEffect(() => {
     /** 日志捕获在 App 挂载时就启动，日志页打开之前的历史才不会丢。 */
     startKarinLogCapture();
+    /** 已装上（或已被更高版本取代）的更新包在启动时删掉；没装成的留着下次直接安装 */
+    cleanupDownloadedApk();
     boot();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);

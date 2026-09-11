@@ -1,6 +1,7 @@
 import React, {useCallback, useEffect, useState} from 'react';
 import {ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, TextInput, View} from 'react-native';
 import {Check, ChevronRight} from 'lucide-react-native';
+import AboutScreen from './AboutScreen';
 import {Colors} from '../theme/colors';
 import {executeAndCollect} from '../services/prootController';
 import {isValidGithubProxy, loadAppSettings, normalizeGithubProxy, saveGithubProxy} from '../services/appSettings';
@@ -32,6 +33,7 @@ export default function SettingsScreen({colors, version, onOpen, onResetProject,
   const [savedProxy, setSavedProxy] = useState('');
   const [proxySaving, setProxySaving] = useState(false);
   const [proxyError, setProxyError] = useState('');
+  const [aboutOpen, setAboutOpen] = useState(false);
 
   const readRegistry = useCallback(() => {
     executeAndCollect('npm config get registry')
@@ -83,10 +85,25 @@ export default function SettingsScreen({colors, version, onOpen, onResetProject,
   const registryLabel = !currentRegistry
     ? '未设置'
     : REGISTRIES.find(item => normalizeRegistry(item.url) === currentRegistry)?.label ?? '自定义源';
+
+  if (aboutOpen) {
+    return <AboutScreen colors={colors} karinVersion={version} onBack={() => setAboutOpen(false)} />;
+  }
+
   return (
     <ScrollView contentContainerStyle={styles.content}>
       <Text style={[styles.intro, {color: colors.muted}]}>统一管理容器运行环境与 Karin 版本</Text>
       <View style={[styles.list, {backgroundColor: colors.surface, borderColor: colors.border}]}>
+        <Pressable onPress={() => setAboutOpen(true)} style={styles.row}>
+          <View style={styles.copy}>
+            <Text style={[styles.label, {color: colors.text}]}>关于 Karin App</Text>
+            <Text style={[styles.value, {color: colors.muted}]}>版本信息、检查更新、GitHub 与 QQ 群</Text>
+          </View>
+          <ChevronRight size={18} color={colors.muted} />
+        </Pressable>
+      </View>
+
+      <View style={[styles.list, styles.listGap, {backgroundColor: colors.surface, borderColor: colors.border}]}>
         <Pressable onPress={onOpen} style={styles.row}>
           <View style={styles.copy}>
             <Text style={[styles.label, {color: colors.text}]}>Karin 版本</Text>
@@ -173,6 +190,7 @@ export default function SettingsScreen({colors, version, onOpen, onResetProject,
           <ChevronRight size={18} color={colors.muted} />
         </Pressable>
       </View>
+
     </ScrollView>
   );
 }
@@ -182,6 +200,8 @@ const styles = StyleSheet.create({
   intro: {fontSize: 12, lineHeight: 18, marginBottom: 12},
   sectionTitle: {fontSize: 12, fontWeight: '700', marginTop: 20, marginBottom: 8},
   list: {borderWidth: 1, borderRadius: 13, overflow: 'hidden'},
+  /** 相邻两个没有小标题的分组之间留出间距 */
+  listGap: {marginTop: 12},
   block: {paddingHorizontal: 15, paddingVertical: 12, gap: 8},
   input: {minHeight: 38, borderWidth: 1, borderRadius: 8, paddingHorizontal: 10, paddingVertical: 7, fontSize: 13, fontFamily: 'monospace'},
   row: {minHeight: 62, paddingHorizontal: 15, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between'},
