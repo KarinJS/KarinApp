@@ -1,4 +1,4 @@
-import React, {useEffect, useState} from 'react';
+import React, {useEffect, useRef, useState} from 'react';
 import {ActivityIndicator, Pressable, StatusBar, StyleSheet, Text, View} from 'react-native';
 import {SafeAreaProvider, SafeAreaView} from 'react-native-safe-area-context';
 import {Power} from 'lucide-react-native';
@@ -61,6 +61,9 @@ export default function App() {
   const [resetConfirm, setResetConfirm] = useState<'project' | 'container' | null>(null);
   const [resetProgress, setResetProgress] = useState<StartupProgress | null>(null);
   const [resetError, setResetError] = useState('');
+  const [devSkipOpen, setDevSkipOpen] = useState(false);
+  /** 启动流程代号：跳过初始化后，进行中流程的回调全部失效（但原生侧无法中断）。 */
+  const bootRunRef = useRef(0);
 
   const refreshKarinVersion = () =>
     getInstalledKarinVersion()
@@ -68,11 +71,21 @@ export default function App() {
       .catch(() => {});
 
   const boot = () => {
+    const run = bootRunRef.current + 1;
+    bootRunRef.current = run;
     setStartupError('');
     setStartupLogPath('');
     setStartupDone(false);
-    runStartupTasks(setStartup)
+    runStartupTasks(progress => {
+      if (bootRunRef.current === run) setStartup(progress);
+    })
       .then(async () => {
+        if (bootRunRef.current !== run) {
+          /** 已跳过启动：不动启动页状态，只补齐版本与设置这两项界面数据 */
+          refreshKarinVersion();
+          loadAppSettings().catch(() => {});
+          return;
+        }
         setContainerState('running');
         setStartupDone(true);
         refreshKarinVersion();
@@ -80,6 +93,7 @@ export default function App() {
         loadAppSettings().catch(() => {});
       })
       .catch(error => {
+        if (bootRunRef.current !== run) return;
         const message = error instanceof Error ? error.message : '启动准备失败';
         setStartupError(message);
         const fullLog = `${getStartupLog()}\n[失败] ${message}`;
@@ -87,6 +101,16 @@ export default function App() {
           .then(path => setStartupLogPath(path))
           .catch(() => setStartupLogPath(''));
       });
+  };
+
+  /** 开发功能：启动页连续点击标记 5 次，确认后不再等待初始化，直接进入界面。 */
+  const handleSkipStartup = () => {
+    setDevSkipOpen(false);
+    bootRunRef.current += 1;
+    setStartupError('');
+    setStartupLogPath('');
+    setStartupDone(true);
+    showNotice('已跳过初始化，后台仍在准备容器');
   };
   const handleOpenLogLocation = async () => {
     try {
@@ -230,6 +254,7 @@ export default function App() {
             logPath={startupLogPath}
             onRetry={boot}
             onOpenLog={handleOpenLogLocation}
+            onSecretTap={() => setDevSkipOpen(true)}
           />
         ) : (
           <View style={styles.screen}>
@@ -344,6 +369,15 @@ export default function App() {
           colors={colors}
           onConfirm={handleReset}
           onClose={() => setResetConfirm(null)}
+        />
+        <ConfirmDialog
+          visible={devSkipOpen}
+          title="跳过初始化"
+          body="开发/测试功能：不再等待容器初始化直接进入界面。原生初始化无法中断，会在后台继续执行，容器就绪前 Karin 相关操作可能不可用。"
+          confirmText="跳过"
+          colors={colors}
+          onConfirm={handleSkipStartup}
+          onClose={() => setDevSkipOpen(false)}
         />
         <VersionSheet
           visible={versionOpen}

@@ -37,6 +37,7 @@ Karin is an Android-first React Native app for managing a bundled proot environm
 - app 插件（含目录条目）只要涉及 2 个以上文件，安装和卸载都会弹出勾选列表，默认全部不勾选，只处理勾选的文件；只有 1 个文件时才直接执行
 - app 插件归属用 sha256 判断：`appPluginFiles` / `appInstallPlan` 只用于下载计划，已安装状态靠 `/root/karin/.karin-app-plugins.json`（安装时记录的 文件名+哈希）与目录里的实际文件哈希匹配，所以改文件名不会被误判、外来同名文件也不会算作该插件；装卸都不按插件名建目录
 - app 安装遇到目录里已有同名文件且不属于当前插件时，弹窗让用户选择「替换」或「重命名」，重命名会把新文件写成 `<name>-1.js` 这类不冲突的名字
+- 启动页（`StartupScreen`）中间图标连续点击 5 次会弹出「跳过初始化」确认框（开发/测试用，只给启动页传了 `onSecretTap`，重置进度页没有）：确认后立刻进入界面不再等容器初始化；原生初始化无法中断，会在后台继续跑，容器就绪前 Karin 相关操作可能不可用
 - Light and dark themes follow the system color scheme
 
 Keep these concepts separate:

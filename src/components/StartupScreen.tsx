@@ -1,6 +1,7 @@
-import React from 'react';
-import {ActivityIndicator, Pressable, StyleSheet, Text, View} from 'react-native';
+import React, {useRef} from 'react';
+import {ActivityIndicator, Image, Pressable, StyleSheet, Text, View} from 'react-native';
 import {Check, Circle} from 'lucide-react-native';
+import karinMark from '../assets/karin-mark.png';
 import {Colors} from '../theme/colors';
 import {primaryTextStyle} from '../theme/styles';
 import type {StartupProgress, StartupStage} from '../startup/startupTasks';
@@ -12,6 +13,8 @@ type Props = {
   logPath: string;
   onRetry: () => void;
   onOpenLog: () => void;
+  /** 开发功能：连续点击标记 5 次触发（用于跳过初始化）。 */
+  onSecretTap?: () => void;
 };
 
 const STEPS: {stage: StartupStage; label: string; detail: string}[] = [
@@ -20,19 +23,32 @@ const STEPS: {stage: StartupStage; label: string; detail: string}[] = [
   {stage: 'environment', label: '准备运行环境', detail: '准备 Karin 运行环境'},
 ];
 
-export default function StartupScreen({colors, progress, error, logPath, onRetry, onOpenLog}: Props) {
+const SECRET_TAP_COUNT = 5;
+
+export default function StartupScreen({colors, progress, error, logPath, onRetry, onOpenLog, onSecretTap}: Props) {
   const percent = Math.round(progress.progress * 100);
   const activeIndex = STEPS.findIndex(item => item.stage === progress.stage);
   const logs = progress.logs.slice(-4);
+  const secretTaps = useRef(0);
+  const handleMarkPress = () => {
+    if (!onSecretTap) return;
+    secretTaps.current += 1;
+    if (secretTaps.current < SECRET_TAP_COUNT) return;
+    secretTaps.current = 0;
+    onSecretTap();
+  };
 
   return (
     <View style={[styles.container, {backgroundColor: colors.background}]}>
-      <View style={[styles.mark, {backgroundColor: colors.accentSoft, borderColor: colors.border}]}>
-        <Text style={[styles.markText, {color: colors.accent}]}>K</Text>
+      <Pressable
+        onPress={handleMarkPress}
+        disabled={!onSecretTap}
+        style={[styles.mark, {backgroundColor: colors.accentSoft, borderColor: colors.border}]}>
+        <Image source={karinMark} style={styles.markImage} resizeMode="contain" />
         <View style={[styles.spinner, {backgroundColor: colors.background}]}>
           <ActivityIndicator size="small" color={colors.accent} />
         </View>
-      </View>
+      </Pressable>
 
       <Text style={[styles.title, {color: colors.text}]}>Karin</Text>
       <Text style={[styles.subtitle, {color: colors.muted}]}>Android 运行环境</Text>
@@ -130,7 +146,7 @@ const styles = StyleSheet.create({
   container: {flex: 1, paddingHorizontal: 28, alignItems: 'center', justifyContent: 'center'},
   mark: {width: 76, height: 76, borderRadius: 24, borderWidth: 1, alignItems: 'center', justifyContent: 'center'},
   spinner: {position: 'absolute', right: -7, bottom: -7, width: 30, height: 30, borderRadius: 15, alignItems: 'center', justifyContent: 'center'},
-  markText: {fontSize: 38, fontWeight: '900', letterSpacing: -2},
+  markImage: {width: 52, height: 52},
   title: {fontSize: 28, fontWeight: '900', marginTop: 18, letterSpacing: 0.4},
   subtitle: {fontSize: 12, fontWeight: '600', marginTop: 5},
   steps: {width: '100%', marginTop: 34, gap: 15},
