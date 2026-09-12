@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.3](https://github.com/KarinJS/KarinApp/compare/v1.1.2...v1.1.3) (2026-09-12)
+
+
+### Bug Fixes
+
+* 优化运行日志回到底部 ([f02a6ea](https://github.com/KarinJS/KarinApp/commit/f02a6eab851c661164a539d704cf8a95ce304d32))
+
 ## [1.1.2](https://github.com/KarinJS/KarinApp/compare/v1.1.1...v1.1.2) (2026-09-11)
 
 
