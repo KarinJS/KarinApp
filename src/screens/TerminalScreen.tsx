@@ -1,7 +1,9 @@
-import React, {useEffect, useRef, useState} from 'react';
+import React, {useCallback, useEffect, useRef, useState} from 'react';
 import {
   BackHandler,
+  Dimensions,
   FlatList,
+  Keyboard,
   LayoutChangeEvent,
   NativeScrollEvent,
   NativeSyntheticEvent,
@@ -11,8 +13,19 @@ import {
   TextInput,
   View,
 } from 'react-native';
-import {ArrowDownToLine, ChevronLeft, CornerDownLeft, Eraser} from 'lucide-react-native';
+import {useSafeAreaInsets} from 'react-native-safe-area-context';
+import {
+  ArrowDownToLine,
+  CheckCheck,
+  ChevronLeft,
+  Copy,
+  CornerDownLeft,
+  Eraser,
+  ListChecks,
+  X,
+} from 'lucide-react-native';
 import {karinService} from '../services/karinService';
+import {setClipboardText} from '../services/clipboardService';
 import {
   appendKarinLog,
   clearKarinLog,
@@ -21,6 +34,8 @@ import {
   KarinLogStream,
   subscribeKarinLog,
 } from '../services/karinLogService';
+import Toast from '../components/Toast';
+import {useToast} from '../hooks/useToast';
 import {Colors} from '../theme/colors';
 import {ansiSegmentStyle} from '../utils/ansi';
 
@@ -41,11 +56,22 @@ function lineColor(stream: KarinLogStream, colors: Colors): string {
   return colors.text;
 }
 
-/** Karin 运行日志：实时滚动，保留 log4js 的 ANSI 颜色，长按用系统选择菜单复制。 */
+/**
+ * Karin 运行日志：实时滚动，保留 log4js 的 ANSI 颜色。
+ * 每行是独立的原生文本视图，系统选区跨不过行边界，所以不走系统选词：长按直接整行选中，
+ * 再按 GitHub 手机版那样点选 / 长按选区间，凑多行一起复制。
+ */
 export default function TerminalScreen({colors, dark, karinRunning, onBack}: Props) {
   const [lines, setLines] = useState<KarinLogLine[]>(() => getKarinLogLines());
   const [input, setInput] = useState('');
   const [follow, setFollow] = useState(true);
+  const [selecting, setSelecting] = useState(false);
+  /** 多选模式下选中的行 id；按 id 记录，日志被环形缓冲裁掉后自动落空。 */
+  const [selectedIds, setSelectedIds] = useState<ReadonlySet<number>>(() => new Set());
+  const {notice, showNotice} = useToast();
+  const insets = useSafeAreaInsets();
+  const [keyboardInset, setKeyboardInset] = useState(0);
+  const root = useRef<React.ComponentRef<typeof View>>(null);
   const list = useRef<FlatList<KarinLogLine>>(null);
   // 贴底偏移量自己算：FlatList 的 scrollToEnd 按各行已量出的高度估算末尾位置，长日志在行内
   // 换行撑高后估算值偏小，只能停在那一行的第一行文字上，所以用原生内容高度减可视高度。
@@ -53,30 +79,71 @@ export default function TerminalScreen({colors, dark, karinRunning, onBack}: Pro
   const viewportHeight = useRef(0);
   const followRef = useRef(true);
   const dragging = useRef(false);
+  /** 长按选区间时的锚点行。 */
+  const anchorId = useRef<number | null>(null);
+  /** 进入多选前是否在贴底，退出时按它决定要不要恢复跟随。 */
+  const resumeFollow = useRef(false);
 
-  const setFollowValue = (next: boolean) => {
+  const setFollowValue = useCallback((next: boolean) => {
     if (followRef.current === next) return;
     followRef.current = next;
     setFollow(next);
-  };
+  }, []);
 
-  const stickToBottom = (animated: boolean) => {
+  const stickToBottom = useCallback((animated: boolean) => {
     if (viewportHeight.current <= 0) return;
     list.current?.scrollToOffset({
       offset: Math.max(0, contentHeight.current - viewportHeight.current),
       animated,
     });
-  };
+  }, []);
+
+  const backToBottom = useCallback(() => {
+    setFollowValue(true);
+    stickToBottom(true);
+  }, [setFollowValue, stickToBottom]);
+
+  const exitSelection = useCallback(() => {
+    setSelecting(false);
+    setSelectedIds(new Set());
+    anchorId.current = null;
+    if (!resumeFollow.current) return;
+    resumeFollow.current = false;
+    backToBottom();
+  }, [backToBottom]);
 
   useEffect(() => subscribeKarinLog(() => setLines([...getKarinLogLines()])), []);
 
+  // Android 15 起 targetSdk 35+ 强制 edge-to-edge，manifest 里的 adjustResize 不再缩小窗口，
+  // 输入法会直接盖住底部输入行。这里按容器在窗口里的真实底边算需要抬多高：窗口已经被系统缩过
+  // 的设备（非 edge-to-edge）算出来是 0，不会重复抬。+ insets.bottom 是因为原生上报的键盘高度
+  // 扣掉了导航栏，而 edge-to-edge 下内容本来就画到导航栏底下。
+  useEffect(() => {
+    const show = Keyboard.addListener('keyboardDidShow', event => {
+      const keyboardHeight = event.endCoordinates.height + insets.bottom;
+      root.current?.measureInWindow((_x, y, _width, height) => {
+        const bottomGap = Dimensions.get('screen').height - (y + height);
+        setKeyboardInset(Math.max(0, Math.round(keyboardHeight - bottomGap)));
+      });
+    });
+    const hide = Keyboard.addListener('keyboardDidHide', () => setKeyboardInset(0));
+    return () => {
+      show.remove();
+      hide.remove();
+    };
+  }, [insets.bottom]);
+
   useEffect(() => {
     const subscription = BackHandler.addEventListener('hardwareBackPress', () => {
+      if (selecting) {
+        exitSelection();
+        return true;
+      }
       onBack();
       return true;
     });
     return () => subscription.remove();
-  }, [onBack]);
+  }, [exitSelection, onBack, selecting]);
 
   // 内容变长时保持贴底；用户上滑查看历史则暂停跟随，不打断阅读。
   const handleContentSizeChange = (_width: number, height: number) => {
@@ -126,26 +193,121 @@ export default function TerminalScreen({colors, dark, karinRunning, onBack}: Pro
       );
   };
 
-  const backToBottom = () => {
-    setFollowValue(true);
-    stickToBottom(true);
+  /** 进入多选：新日志会把列表顶走，先暂停跟随，退出时按 resumeFollow 恢复。 */
+  const enterSelection = (id?: number) => {
+    resumeFollow.current = followRef.current;
+    setFollowValue(false);
+    setSelecting(true);
+    setSelectedIds(id === undefined ? new Set() : new Set([id]));
+    anchorId.current = id ?? null;
   };
 
+  const toggleLine = (id: number) => {
+    setSelectedIds(current => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+    anchorId.current = id;
+  };
+
+  /** 长按：把锚点行到这一行之间整段选上（再长按可以继续从这一行往外扩）。 */
+  const selectRange = (id: number) => {
+    const from = anchorId.current;
+    if (from === null) {
+      enterSelection(id);
+      return;
+    }
+    const fromIndex = lines.findIndex(line => line.id === from);
+    const toIndex = lines.findIndex(line => line.id === id);
+    if (fromIndex < 0 || toIndex < 0) {
+      toggleLine(id);
+      return;
+    }
+    const start = Math.min(fromIndex, toIndex);
+    const end = Math.max(fromIndex, toIndex);
+    setSelectedIds(current => {
+      const next = new Set(current);
+      for (let index = start; index <= end; index += 1) next.add(lines[index].id);
+      return next;
+    });
+    anchorId.current = id;
+  };
+
+  const selectAll = () => {
+    setSelectedIds(new Set(lines.map(line => line.id)));
+  };
+
+  /** 复制所选行：按行拼接纯文本（ANSI 颜色只在渲染时生效，不写进剪贴板）。 */
+  const copySelected = () => {
+    const picked = lines.filter(line => selectedIds.has(line.id));
+    if (picked.length === 0) return;
+    const text = picked.map(line => line.segments.map(segment => segment.text).join('')).join('\n');
+    if (!setClipboardText(text)) {
+      showNotice('复制失败：剪贴板不可用', 5000);
+      return;
+    }
+    exitSelection();
+    showNotice(`已复制 ${picked.length} 行日志`);
+  };
+
+  const selectedCount = lines.reduce(
+    (count, line) => (selectedIds.has(line.id) ? count + 1 : count),
+    0,
+  );
+
   return (
-    <View style={styles.container}>
+    <View ref={root} style={[styles.container, keyboardInset > 0 ? {paddingBottom: keyboardInset} : null]}>
       <View style={[styles.header, {borderBottomColor: colors.border}]}>
-        <Pressable onPress={onBack} style={styles.headerButton} accessibilityLabel="返回">
-          <ChevronLeft size={20} color={colors.text} />
+        <Pressable
+          onPress={selecting ? exitSelection : onBack}
+          style={styles.headerButton}
+          accessibilityLabel={selecting ? '取消选择' : '返回'}>
+          {selecting ? (
+            <X size={19} color={colors.text} />
+          ) : (
+            <ChevronLeft size={20} color={colors.text} />
+          )}
         </Pressable>
         <View style={styles.headerCopy}>
-          <Text style={[styles.headerTitle, {color: colors.text}]}>运行日志</Text>
+          <Text style={[styles.headerTitle, {color: colors.text}]}>
+            {selecting ? `已选 ${selectedCount} 行` : '运行日志'}
+          </Text>
           <Text numberOfLines={1} style={[styles.headerHint, {color: colors.muted}]}>
-            {karinRunning ? 'Karin 运行中' : 'Karin 未运行'}
+            {selecting
+              ? '点行多选，长按选一段'
+              : karinRunning
+                ? 'Karin 运行中 · 长按行选中复制'
+                : 'Karin 未运行'}
           </Text>
         </View>
-        <Pressable onPress={clearKarinLog} style={styles.headerButton} accessibilityLabel="清空日志">
-          <Eraser size={17} color={colors.text} />
-        </Pressable>
+        {selecting ? (
+          <>
+            <Pressable onPress={selectAll} style={styles.headerButton} accessibilityLabel="全选">
+              <CheckCheck size={17} color={colors.text} />
+            </Pressable>
+            <Pressable
+              onPress={copySelected}
+              disabled={selectedCount === 0}
+              style={styles.headerButton}
+              accessibilityLabel="复制所选">
+              <Copy size={17} color={selectedCount === 0 ? colors.muted : colors.accent} />
+            </Pressable>
+          </>
+        ) : (
+          <>
+            <Pressable
+              onPress={() => enterSelection()}
+              style={styles.headerButton}
+              accessibilityLabel="多选复制">
+              <ListChecks size={17} color={colors.text} />
+            </Pressable>
+            <Pressable onPress={clearKarinLog} style={styles.headerButton} accessibilityLabel="清空日志">
+              <Eraser size={17} color={colors.text} />
+            </Pressable>
+          </>
+        )}
       </View>
 
       <FlatList
@@ -154,21 +316,39 @@ export default function TerminalScreen({colors, dark, karinRunning, onBack}: Pro
         keyExtractor={item => `${item.id}`}
         style={styles.list}
         contentContainerStyle={styles.listContent}
-        renderItem={({item}) => (
-          <Text selectable style={[styles.line, {color: lineColor(item.stream, colors)}]}>
-            {item.segments.map((segment, index) => (
-              <Text key={index} style={ansiSegmentStyle(segment, dark)}>
-                {segment.text}
+        renderItem={({item}) => {
+          const color = lineColor(item.stream, colors);
+          const body = item.segments.map((segment, index) => (
+            <Text key={index} style={ansiSegmentStyle(segment, dark)}>
+              {segment.text}
+            </Text>
+          ));
+          // 每行是各自独立的原生文本视图，系统选区跨不过行边界，多选只能在 JS 侧做。
+          if (!selecting) {
+            return (
+              <Text onLongPress={() => enterSelection(item.id)} style={[styles.line, {color}]}>
+                {body}
               </Text>
-            ))}
-          </Text>
-        )}
+            );
+          }
+          const isSelected = selectedIds.has(item.id);
+          return (
+            <Pressable
+              onPress={() => toggleLine(item.id)}
+              onLongPress={() => selectRange(item.id)}
+              style={[styles.lineRow, isSelected ? {backgroundColor: colors.accentSoft} : null]}>
+              <Text style={[styles.line, {color}]}>{body}</Text>
+            </Pressable>
+          );
+        }}
         onContentSizeChange={handleContentSizeChange}
         onLayout={handleLayout}
         onScroll={handleScroll}
         onScrollBeginDrag={handleScrollBeginDrag}
         onScrollEndDrag={handleScrollSettled}
         onMomentumScrollEnd={handleScrollSettled}
+        keyboardDismissMode="on-drag"
+        keyboardShouldPersistTaps="handled"
         scrollEventThrottle={16}
         ListEmptyComponent={
           <View style={styles.empty}>
@@ -212,6 +392,8 @@ export default function TerminalScreen({colors, dark, karinRunning, onBack}: Pro
           <CornerDownLeft size={16} color={karinRunning && input.trim() ? '#FFFFFF' : colors.muted} />
         </Pressable>
       </View>
+
+      {notice ? <Toast message={notice} colors={colors} bottomOffset={64} /> : null}
     </View>
   );
 }
@@ -226,6 +408,8 @@ const styles = StyleSheet.create({
   list: {flex: 1},
   listContent: {paddingHorizontal: 12, paddingVertical: 8},
   line: {fontFamily: 'monospace', fontSize: 11, lineHeight: 17},
+  /** 多选模式下的行容器：负边距让高亮铺到列表内边距外，留一点圆角。 */
+  lineRow: {marginHorizontal: -8, paddingHorizontal: 8, borderRadius: 4},
   empty: {flex: 1, alignItems: 'center', justifyContent: 'center', paddingTop: 60},
   emptyText: {fontSize: 12, fontWeight: '600'},
   jump: {position: 'absolute', alignSelf: 'center', bottom: 66, flexDirection: 'row', alignItems: 'center', gap: 5, borderRadius: 16, paddingHorizontal: 12, paddingVertical: 6},
