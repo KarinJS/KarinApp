@@ -122,6 +122,54 @@ const rankAsset = (name: string) => {
   return 1;
 };
 
+/** 去掉行内 markdown：链接只留文字，去掉加粗/行内代码标记。 */
+const stripMarkdown = (text: string) =>
+  text
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')
+    .replace(/\*\*(.+?)\*\*/g, '$1')
+    .replace(/`([^`]*)`/g, '$1')
+    .trim();
+
+/** 提交条目结尾的短链：`标题 ([abc1234](https://…))` → `标题` */
+const stripCommitSuffix = (text: string) => text.replace(/\s*\(\[[^\]]*\]\([^)]*\)\)\s*$/, '').trim();
+
+/**
+ * 把 release-please 生成的更新日志整理成弹窗里显示的纯文本：
+ * `## [1.1.3](…)` 这种二级标题就是版本行，交给弹窗标题，这里丢掉；
+ * `### Bug Fixes` 这类三级标题变成 `Bug Fixes:` 分节名；`* 条目 ([hash](url))` 只留条目文字。
+ * 所以最终显示成：标题「发现新版本 v1.1.3」+「Bug Fixes:」+ 一行行条目。
+ */
+export const formatReleaseNotes = (body: string) => {
+  const lines: string[] = [];
+  for (const raw of body.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line || /^-{3,}$/.test(line)) continue;
+    const heading = line.match(/^#+\s+(.+)$/);
+    if (heading) {
+      /** 二级标题是 release-please 的版本行 + 日期，弹窗标题已经写了版本，不用重复 */
+      if (/^##\s/.test(line)) continue;
+      const name = stripMarkdown(heading[1]);
+      if (!name) continue;
+      if (lines.length > 0) lines.push('');
+      lines.push(`${name}:`);
+      continue;
+    }
+    const item = stripMarkdown(stripCommitSuffix(line.replace(/^[*+-]\s+/, '')));
+    /** release-please 结尾的「Full Changelog: …compare…」对用户没意义 */
+    if (!item || /^full changelog[:：]/i.test(item)) continue;
+    lines.push(item);
+  }
+  return lines.join('\n').trim();
+};
+
+/** 弹窗里只展示前面一段更新日志：按行截断，免得把最后一个条目切成半句。 */
+export const truncateReleaseNotes = (notes: string, limit = 500) => {
+  if (notes.length <= limit) return notes;
+  const head = notes.slice(0, limit);
+  const lastBreak = head.lastIndexOf('\n');
+  return `${(lastBreak > 0 ? head.slice(0, lastBreak) : head).trimEnd()}…`;
+};
+
 const parseRelease = (data: GithubRelease): UpdateRelease | null => {
   const asset = (data.assets ?? [])
     .filter(item => (item.name ?? '').toLowerCase().endsWith('.apk') && item.browser_download_url)
@@ -136,7 +184,7 @@ const parseRelease = (data: GithubRelease): UpdateRelease | null => {
   return {
     version,
     versionCode: versionCodeOf(version),
-    notes: (data.body ?? '').trim(),
+    notes: formatReleaseNotes(data.body ?? ''),
     size: asset.size ?? 0,
     downloadUrl: asset.browser_download_url,
     sha256: digest.startsWith('sha256:') ? digest.slice('sha256:'.length) : '',

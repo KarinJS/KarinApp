@@ -10,6 +10,7 @@ import {
   openInstallPermission,
   refreshAppInfo,
   subscribeUpdate,
+  truncateReleaseNotes,
 } from '../services/updateService';
 import type {UpdatePhase, UpdateState} from '../services/updateService';
 
@@ -47,7 +48,7 @@ export function useUpdateFlow() {
 
   const busy = update.phase === 'checking' || update.phase === 'downloading';
   const status = update.message || `当前版本 v${update.appVersion || '未知'}`;
-  const releaseNotes = update.release?.notes ? update.release.notes.slice(0, 500) : '暂无更新说明';
+  const releaseNotes = update.release?.notes ? truncateReleaseNotes(update.release.notes) : '暂无更新说明';
   /** 有半截包时改成「已下载多少、从断点继续」，否则展示整包大小 */
   const downloadSummary = update.partial
     ? `上次已下载 ${formatSize(update.partial.received)}${
