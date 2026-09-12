@@ -2,6 +2,8 @@ import React, {useCallback, useEffect, useMemo, useRef, useState} from 'react';
 import {
   ActivityIndicator,
   Animated,
+  Dimensions,
+  Keyboard,
   Linking,
   Modal,
   Pressable,
@@ -12,6 +14,7 @@ import {
   TextInput,
   View,
 } from 'react-native';
+import {useSafeAreaInsets} from 'react-native-safe-area-context';
 import {
   BadgeCheck,
   ChevronDown,
@@ -20,9 +23,11 @@ import {
   CircleDashed,
   Download,
   FileCode,
+  FileUp,
   Gamepad2,
   GitBranch,
   Layers,
+  Link2,
   Package,
   Plug,
   RefreshCw,
@@ -40,15 +45,19 @@ import LogConsole from '../components/LogConsole';
 import MarkdownView from '../components/MarkdownView';
 import {Colors} from '../theme/colors';
 import {loadAppSettings} from '../services/appSettings';
+import {canImportLocalAppPlugin, importLocalAppPlugin} from '../services/appPluginImport';
 import {
   APP_PLUGIN_DIR,
+  APP_PLUGIN_ROOTFS_DIR,
   appPluginDirEntry,
   appPluginFileName,
   appPluginFiles,
+  appPluginNameFromUrl,
   fetchPluginDetails,
   githubUrlFrom,
   installPlugin,
   loadPluginSnapshot,
+  manualAppPlugin,
   npmPackageUrl,
   Plugin,
   PluginDetails,
@@ -61,7 +70,13 @@ import {
 
 type TaskStatus = 'running' | 'completed' | 'failed' | 'cancelled';
 type TaskKind = 'install' | 'remove';
-type TaskOptions = {files?: PluginFile[]; renames?: Record<string, string>; appFiles?: string[]};
+type TaskOptions = {
+  files?: PluginFile[];
+  renames?: Record<string, string>;
+  appFiles?: string[];
+  /** 未知来源文件（手动导入 / 直链下载）：不写归属记账 */
+  thirdParty?: boolean;
+};
 
 type PluginDetailState =
   | {status: 'loading'; npmUrl: string}
@@ -139,6 +154,14 @@ const freeFileName = (name: string, taken: Set<string>) => {
     candidate = `${base}-${index}${extension}`;
   }
   return candidate;
+};
+
+/** 任务日志里的文件大小；app 插件一般只有几十 KB */
+const formatFileSize = (bytes: number) => {
+  if (!Number.isFinite(bytes) || bytes < 0) return '大小未知';
+  if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  if (bytes >= 1024) return `${Math.round(bytes / 1024)} KB`;
+  return `${bytes} B`;
 };
 
 /** 已安装文件名对应的市场文件信息（改过名就匹配不到） */
@@ -260,6 +283,7 @@ function TaskCard({
 }
 
 export default function PluginsScreen({colors}: {colors: Colors}) {
+  const insets = useSafeAreaInsets();
   const [snapshot, setSnapshot] = useState<PluginSnapshot>({plugins: [], appDirFiles: []});
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -274,11 +298,21 @@ export default function PluginsScreen({colors}: {colors: Colors}) {
   const [detailState, setDetailState] = useState<PluginDetailState>({status: 'loading', npmUrl: ''});
   const [picker, setPicker] = useState<PickerState | null>(null);
   const [conflict, setConflict] = useState<ConflictState | null>(null);
+  /** 安装方式选择：本地文件 / 直链下载 */
+  const [installChoiceOpen, setInstallChoiceOpen] = useState(false);
+  /** 市场里没有的 app 插件文件：用户自己填直链和文件名 */
+  const [manualOpen, setManualOpen] = useState(false);
+  const [manualUrl, setManualUrl] = useState('');
+  const [manualName, setManualName] = useState('');
+  const [manualError, setManualError] = useState('');
+  /** 直链表单被输入法顶上来时需要的底部内边距，0 表示键盘没弹 */
+  const [manualKeyboardInset, setManualKeyboardInset] = useState(0);
   const [selectedFiles, setSelectedFiles] = useState<Record<string, boolean>>({});
   const taskCancellers = useRef<Record<string, AbortController>>({});
   const detailRequestId = useRef(0);
   const loadedOnce = useRef(false);
   const sheetY = useRef(new Animated.Value(330)).current;
+  const manualStep = useRef<React.ComponentRef<typeof View>>(null);
 
   const load = useCallback(async (force = false) => {
     if (loadedOnce.current) setRefreshing(true);
@@ -308,9 +342,41 @@ export default function PluginsScreen({colors}: {colors: Colors}) {
     }
   }, [sheetY, tasksOpen]);
 
+  // Android 15 起 targetSdk 35+ 强制 edge-to-edge，Modal 里的 adjustResize 同样不再缩小窗口，
+  // 输入法会盖住居中的直链表单。这里按表单容器在窗口里的真实底边算要抬多高：窗口已经被系统缩过
+  // 的设备（非 edge-to-edge）算出来是 0，不会重复抬；+ insets.bottom 是因为原生上报的键盘高度
+  // 扣掉了导航栏，而 edge-to-edge 下内容本来就画到导航栏底下。
+  useEffect(() => {
+    if (!manualOpen) {
+      setManualKeyboardInset(0);
+      return;
+    }
+    const show = Keyboard.addListener('keyboardDidShow', event => {
+      const keyboardHeight = event.endCoordinates.height + insets.bottom;
+      manualStep.current?.measureInWindow((_x, y, _width, height) => {
+        const bottomGap = Dimensions.get('screen').height - (y + height);
+        setManualKeyboardInset(Math.max(0, Math.round(keyboardHeight - bottomGap)));
+      });
+    });
+    const hide = Keyboard.addListener('keyboardDidHide', () => setManualKeyboardInset(0));
+    return () => {
+      show.remove();
+      hide.remove();
+    };
+  }, [insets.bottom, manualOpen]);
+
   const appDirFiles = snapshot.appDirFiles;
   const dirNames = useMemo(() => new Set(appDirFiles.map(file => file.name)), [appDirFiles]);
   const dirOwners = useMemo(() => new Map(appDirFiles.map(file => [file.name, file.owner])), [appDirFiles]);
+  /** 手动安装弹窗里实时预览的落地文件名，以及会不会覆盖已有文件 */
+  const manualTarget = useMemo(() => {
+    const wanted = (manualName.trim() || appPluginNameFromUrl(manualUrl)).trim();
+    if (!wanted) return '';
+    return wanted.toLowerCase().endsWith('.js') ? wanted : `${wanted}.js`;
+  }, [manualName, manualUrl]);
+  const manualConflict = manualTarget !== '' && dirNames.has(manualTarget);
+  /** 旧版本原生层没有导入模块时，本地文件那条路给个明确提示而不是点了没反应 */
+  const localImportAvailable = useMemo(() => canImportLocalAppPlugin(), []);
   /** karin-plugin-example 是固定条目，永远排在最前面 */
   const dirEntry = useMemo(() => appPluginDirEntry(snapshot), [snapshot]);
   const rows = useMemo(() => [dirEntry, ...snapshot.plugins], [dirEntry, snapshot.plugins]);
@@ -389,7 +455,11 @@ export default function PluginsScreen({colors}: {colors: Colors}) {
   const detailFiles = useMemo(() => {
     if (!detailPlugin || detailPlugin.type !== 'app') return [];
     if (detailPlugin.virtual) {
-      return appDirFiles.map(file => ({name: file.name, note: file.owner ? `属于 ${file.owner}` : '来源未知', installed: true}));
+      return appDirFiles.map(file => ({
+        name: file.name,
+        note: file.owner ? `属于 ${file.owner}` : '未知来源',
+        installed: true,
+      }));
     }
     const installed = new Set(detailPlugin.installedFiles ?? []);
     return appPluginFiles(detailPlugin).flatMap(file => {
@@ -410,7 +480,7 @@ export default function PluginsScreen({colors}: {colors: Colors}) {
         const owner = dirOwners.get(name);
         return {
           label: name,
-          note: marketFileLabel(picker.plugin, name) || (owner ? `属于 ${owner}` : '来源未知'),
+          note: marketFileLabel(picker.plugin, name) || (owner ? `属于 ${owner}` : '未知来源'),
         };
       });
     }
@@ -437,7 +507,11 @@ export default function PluginsScreen({colors}: {colors: Colors}) {
         if (kind === 'remove') {
           await removePlugin(plugin, onLog, controller.signal, {appFiles: options.appFiles});
         } else {
-          await installPlugin(plugin, onLog, controller.signal, {files: options.files, renames: options.renames});
+          await installPlugin(plugin, onLog, controller.signal, {
+            files: options.files,
+            renames: options.renames,
+            thirdParty: options.thirdParty,
+          });
         }
         updateTask(plugin.name, task => ({...task, status: 'completed', endedAt: Date.now()}));
         await load(true);
@@ -501,6 +575,69 @@ export default function PluginsScreen({colors}: {colors: Colors}) {
     [pickFiles, startInstall],
   );
 
+  /**
+   * 手动安装：现造一个单文件 app 条目，后面和市场的 app 插件走同一条安装流程。
+   * 同名冲突在弹窗里已经提示过，这里直接开装，不再弹「替换 / 重命名」。
+   */
+  const submitManualInstall = useCallback(() => {
+    try {
+      const {plugin, files, renames} = manualAppPlugin(manualUrl, manualName);
+      setManualOpen(false);
+      setManualUrl('');
+      setManualName('');
+      setManualError('');
+      runTask(plugin, 'install', {files, renames, thirdParty: true});
+    } catch (caught) {
+      setManualError(caught instanceof Error ? caught.message : String(caught));
+    }
+  }, [manualName, manualUrl, runTask]);
+
+  /**
+   * 本地文件安装：原生选文件后直接复制进 rootfs 的 app 插件目录，
+   * 不经过容器的 curl，也不记归属（未知来源）。
+   */
+  const importLocalAppPluginFile = useCallback(async () => {
+    setInstallChoiceOpen(false);
+    setManualError('');
+    const taskName = '从本地文件安装';
+    const pushTask = (status: TaskStatus, line: string) => {
+      setTasks(current => {
+        const previous = current[taskName];
+        const base: PluginTask = previous ?? {
+          name: taskName,
+          kind: 'install',
+          status: 'running',
+          startedAt: Date.now(),
+          logs: [],
+        };
+        return {
+          ...current,
+          [taskName]: {
+            ...base,
+            status,
+            endedAt: status === 'running' ? undefined : Date.now(),
+            logs: [...base.logs, line],
+          },
+        };
+      });
+      setTasksOpen(true);
+    };
+
+    pushTask('running', '请在系统文件选择器里选一个 .js 文件…');
+    try {
+      const file = await importLocalAppPlugin(APP_PLUGIN_ROOTFS_DIR);
+      if (!file) {
+        pushTask('cancelled', '已取消');
+        return;
+      }
+      const suffix = /\.js$/i.test(file.name) ? '' : '（注意：Karin 只加载 .js，这个后缀不会生效）';
+      pushTask('completed', `已导入 ${file.name}（${formatFileSize(file.size)}）到 plugins/${APP_PLUGIN_DIR}${suffix}`);
+      await load(true);
+    } catch (caught) {
+      pushTask('failed', caught instanceof Error ? caught.message : String(caught));
+    }
+  }, [load]);
+
   const requestRemove = useCallback(
     (plugin: Plugin) => {
       if (plugin.type !== 'app') {
@@ -537,6 +674,19 @@ export default function PluginsScreen({colors}: {colors: Colors}) {
       setDetailState({status: 'error', npmUrl});
     }
   }, []);
+
+  /** 安装步骤（本地文件 / 直链）就地盖在详情页上，不再另开一个 Modal */
+  const closeInstallSteps = useCallback(() => {
+    setInstallChoiceOpen(false);
+    setManualOpen(false);
+    setManualError('');
+  }, []);
+
+  /** 关详情页：安装步骤一起复位，下次打开不会停在上一步 */
+  const closeDetail = useCallback(() => {
+    setDetailPlugin(null);
+    closeInstallSteps();
+  }, [closeInstallSteps]);
 
   const openUrl = useCallback((url: string) => {
     Linking.openURL(url).catch(() => {});
@@ -817,9 +967,16 @@ export default function PluginsScreen({colors}: {colors: Colors}) {
         </View>
       </Modal>
 
-      <Modal animationType='slide' onRequestClose={() => setDetailPlugin(null)} transparent visible={detailPlugin !== null}>
+      <Modal
+        animationType='slide'
+        onRequestClose={() => {
+          if (installChoiceOpen || manualOpen) closeInstallSteps();
+          else closeDetail();
+        }}
+        transparent
+        visible={detailPlugin !== null}>
         <View style={styles.overlay}>
-          <Pressable onPress={() => setDetailPlugin(null)} style={styles.overlayBackdrop} />
+          <Pressable onPress={closeDetail} style={styles.overlayBackdrop} />
           <View style={[styles.detailSheet, {backgroundColor: colors.surface}]}>
             <View style={styles.sheetHandle} />
             <View style={styles.detailHeader}>
@@ -835,7 +992,7 @@ export default function PluginsScreen({colors}: {colors: Colors}) {
               </View>
               <Pressable
                 accessibilityRole='button'
-                onPress={() => setDetailPlugin(null)}
+                onPress={closeDetail}
                 style={[styles.detailClose, {backgroundColor: colors.neutralSoft}]}>
                 <X color={colors.muted} size={16} />
               </Pressable>
@@ -865,6 +1022,15 @@ export default function PluginsScreen({colors}: {colors: Colors}) {
                   <Text style={[styles.detailLinkText, {color: detailInstalled ? colors.danger : colors.accent}]}>
                     {detailInstalled ? '卸载' : '安装'}
                   </Text>
+                </Pressable>
+              ) : null}
+              {detailPlugin?.virtual ? (
+                <Pressable
+                  accessibilityRole='button'
+                  onPress={() => setInstallChoiceOpen(true)}
+                  style={[styles.detailLink, {backgroundColor: colors.accentSoft, borderColor: colors.accent}]}>
+                  <Download color={colors.accent} size={14} />
+                  <Text style={[styles.detailLinkText, {color: colors.accent}]}>安装</Text>
                 </Pressable>
               ) : null}
               {detailPlugin?.virtual && appDirFiles.length ? (
@@ -904,7 +1070,7 @@ export default function PluginsScreen({colors}: {colors: Colors}) {
                 <ScrollView contentContainerStyle={styles.readmeContent} nestedScrollEnabled>
                   {detailPlugin?.virtual ? (
                     <Text style={[styles.appHint, {color: colors.muted}]}>
-                      app 插件按单个 .js 文件加载，卸载时可以逐个选择；带“属于”标记的文件是通过哈希匹配上插件市场的。
+                      app 插件按单个 .js 文件加载，卸载时可以逐个选择；「安装」支持从本地文件或直链导入，两种方式装进来的都当未知来源（不记归属），带“属于”标记的是通过哈希匹配上插件市场的。
                     </Text>
                   ) : null}
                   {detailFiles.length === 0 ? (
@@ -963,6 +1129,122 @@ export default function PluginsScreen({colors}: {colors: Colors}) {
               )}
             </View>
           </View>
+          {installChoiceOpen ? (
+            <View style={[styles.detailStep, styles.detailStepBottom]}>
+              <Pressable onPress={closeInstallSteps} style={styles.overlayBackdrop} />
+              <View style={[styles.conflictSheet, {backgroundColor: colors.surface}]}>
+                <Text style={[styles.name, {color: colors.text}]}>安装 APP 插件</Text>
+                <Text style={[styles.conflictBody, {color: colors.muted}]}>
+                  {`两种方式装进来的文件都落在 plugins/${APP_PLUGIN_DIR}，统一按未知来源处理（不记归属），之后可以在这里逐个卸载。`}
+                </Text>
+                <Pressable
+                  accessibilityRole='button'
+                  disabled={!localImportAvailable}
+                  onPress={importLocalAppPluginFile}
+                  style={[styles.choiceButton, {borderColor: colors.border}, !localImportAvailable && styles.disabledAction]}>
+                  <FileUp color={colors.accent} size={17} />
+                  <View style={styles.choiceCopy}>
+                    <Text style={[styles.choiceTitle, {color: colors.text}]}>从本地文件安装</Text>
+                    <Text style={[styles.choiceNote, {color: colors.muted}]}>
+                      {localImportAvailable
+                        ? '选手机里的 .js 文件（下载目录、聊天里保存的文件等）'
+                        : '当前安装的 App 还没有这个原生模块，重新构建安装后再试'}
+                    </Text>
+                  </View>
+                </Pressable>
+                <Pressable
+                  accessibilityRole='button'
+                  onPress={() => {
+                    setInstallChoiceOpen(false);
+                    setManualError('');
+                    setManualOpen(true);
+                  }}
+                  style={[styles.choiceButton, {borderColor: colors.border}]}>
+                  <Link2 color={colors.accent} size={17} />
+                  <View style={styles.choiceCopy}>
+                    <Text style={[styles.choiceTitle, {color: colors.text}]}>从直链下载</Text>
+                    <Text style={[styles.choiceNote, {color: colors.muted}]}>填 GitHub 等文件地址，自动套用「GitHub 加速」</Text>
+                  </View>
+                </Pressable>
+                <View style={styles.conflictActions}>
+                  <Pressable
+                    onPress={closeInstallSteps}
+                    style={[styles.conflictButton, {borderColor: colors.border}]}>
+                    <Text style={[styles.conflictButtonText, {color: colors.muted}]}>取消</Text>
+                  </Pressable>
+                </View>
+              </View>
+            </View>
+          ) : null}
+
+          {manualOpen ? (
+            <View
+              ref={manualStep}
+              style={[styles.detailStep, styles.detailStepCenter, {paddingBottom: manualKeyboardInset}]}>
+              <Pressable onPress={closeInstallSteps} style={styles.overlayBackdrop} />
+              <View style={[styles.manualSheet, {backgroundColor: colors.surface, borderColor: colors.border}]}>
+                <Text style={[styles.name, {color: colors.text}]}>从直链安装 APP 插件</Text>
+                <Text style={[styles.filePickerHint, {color: colors.muted}]}>
+                  {`填文件直链，装进 plugins/${APP_PLUGIN_DIR}，按未知来源处理；文件名默认取直链里的名字，装完可以在文件列表里卸载。`}
+                </Text>
+                <TextInput
+                  autoCapitalize='none'
+                  autoCorrect={false}
+                  onChangeText={text => {
+                    setManualUrl(text);
+                    setManualError('');
+                  }}
+                  placeholder='https://raw.githubusercontent.com/.../plugin.js'
+                  placeholderTextColor={colors.muted}
+                  style={[styles.manualInput, {borderColor: colors.border, color: colors.text}]}
+                  value={manualUrl}
+                />
+                <TextInput
+                  autoCapitalize='none'
+                  autoCorrect={false}
+                  onChangeText={text => {
+                    setManualName(text);
+                    setManualError('');
+                  }}
+                  placeholder={appPluginNameFromUrl(manualUrl) || '文件名，例如 my-plugin.js'}
+                  placeholderTextColor={colors.muted}
+                  style={[styles.manualInput, {borderColor: colors.border, color: colors.text}]}
+                  value={manualName}
+                />
+                {manualError ? (
+                  <Text style={[styles.manualNote, {color: colors.danger}]}>{manualError}</Text>
+                ) : manualTarget ? (
+                  <Text style={[styles.manualNote, {color: manualConflict ? colors.danger : colors.muted}]}>
+                    {manualConflict
+                      ? `已有同名文件 ${manualTarget}${dirOwners.get(manualTarget) ? `（属于 ${dirOwners.get(manualTarget)}）` : ''}，安装会覆盖`
+                      : `会装成 ${manualTarget}`}
+                  </Text>
+                ) : null}
+                <View style={styles.conflictActions}>
+                  <Pressable
+                    onPress={() => {
+                      setManualOpen(false);
+                      setInstallChoiceOpen(true);
+                    }}
+                    style={[styles.conflictButton, {borderColor: colors.border}]}>
+                    <Text style={[styles.conflictButtonText, {color: colors.muted}]}>返回</Text>
+                  </Pressable>
+                  <Pressable
+                    disabled={!manualUrl.trim()}
+                    onPress={submitManualInstall}
+                    style={[
+                      styles.conflictButton,
+                      {backgroundColor: colors.accent, borderColor: colors.accent},
+                      !manualUrl.trim() && styles.disabledAction,
+                    ]}>
+                    <Text style={[styles.conflictButtonText, styles.conflictPrimaryText]}>
+                      {manualConflict ? '覆盖安装' : '安装'}
+                    </Text>
+                  </Pressable>
+                </View>
+              </View>
+            </View>
+          ) : null}
         </View>
       </Modal>
 
@@ -1203,6 +1485,20 @@ const styles = StyleSheet.create({
   appFileState: {fontSize: 10, fontWeight: '700'},
   appFileDesc: {fontSize: 11, lineHeight: 16},
   conflictSheet: {width: '100%', padding: 16, borderTopLeftRadius: 16, borderTopRightRadius: 16, gap: 8},
+  /** 安装步骤就地盖在详情页上，不再另开 Modal（Android 上两个 Modal 叠着会互相影响） */
+  detailStep: {position: 'absolute', top: 0, right: 0, bottom: 0, left: 0, alignItems: 'center'},
+  /** 选安装方式贴底，和 sheet 一致 */
+  detailStepBottom: {justifyContent: 'flex-end'},
+  /** 直链表单居中；键盘弹出时靠 render 里的 paddingBottom 把内容整体往上让 */
+  detailStepCenter: {justifyContent: 'center', paddingHorizontal: 16, paddingVertical: 40},
+  manualSheet: {width: '100%', padding: 16, borderWidth: 1, borderRadius: 14},
+  manualInput: {borderWidth: 1, borderRadius: 10, paddingHorizontal: 10, paddingVertical: 8, fontSize: 12, marginTop: 8},
+  manualNote: {fontSize: 11, lineHeight: 16, marginTop: 8},
+  /** 安装方式选择：本地文件 / 直链下载 */
+  choiceButton: {flexDirection: 'row', alignItems: 'center', gap: 10, borderWidth: 1, borderRadius: 10, paddingHorizontal: 12, paddingVertical: 11, marginTop: 2},
+  choiceCopy: {flex: 1, gap: 2},
+  choiceTitle: {fontSize: 13, fontWeight: '700'},
+  choiceNote: {fontSize: 11, lineHeight: 15},
   conflictBody: {fontSize: 12, lineHeight: 18},
   conflictList: {maxHeight: 120},
   conflictFile: {fontFamily: 'monospace', fontSize: 11, paddingVertical: 2},

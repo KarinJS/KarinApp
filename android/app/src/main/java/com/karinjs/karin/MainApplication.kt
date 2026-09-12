@@ -19,6 +19,7 @@ class MainApplication : Application(), ReactApplication {
           add(ProotPackage())
           add(LogPackage())
           add(UpdaterPackage())
+          add(AppPluginImportPackage())
         },
     )
   }

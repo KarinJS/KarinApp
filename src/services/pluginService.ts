@@ -61,6 +61,8 @@ type InstallOptions = {
   files?: PluginFile[];
   /** app 插件：同名冲突时换个文件名落地，key 是原文件名 */
   renames?: Record<string, string>;
+  /** 未知来源文件（手动导入的）：不写归属记账，卸载列表里永远显示为未知来源 */
+  thirdParty?: boolean;
 };
 
 type RemoveOptions = {
@@ -78,6 +80,9 @@ const PLUGIN_TYPES = new Set<PluginType>(['npm', 'git', 'app']);
  * 所以 app 插件只能按文件维度管理，不能按插件名建目录。
  */
 export const APP_PLUGIN_DIR = 'karin-plugin-example';
+
+/** app 插件目录在 rootfs 里的相对路径（容器内 /root/karin/... 去掉开头的 /），原生复制本地文件时用 */
+export const APP_PLUGIN_ROOTFS_DIR = `${KARIN_DIR.replace(/^\//, '')}/plugins/${APP_PLUGIN_DIR}`;
 
 /** 记录每个 app 插件装了哪些文件（文件名 + sha256），用于改过名也能认出来 */
 const APP_MANIFEST_PATH = `${KARIN_DIR}/.karin-app-plugins.json`;
@@ -190,6 +195,40 @@ const appFileName = (url: string) => {
 
 /** app 插件文件按 URL 落地时的文件名 */
 export const appPluginFileName = (url: string) => appFileName(url);
+
+/** 从直链推文件名；推不出来（比如地址以 / 结尾）返回空串 */
+export const appPluginNameFromUrl = (url: string) => {
+  try {
+    return appFileName(url.trim());
+  } catch {
+    return '';
+  }
+};
+
+/**
+ * 手动安装：市场列表里没有这个 app 插件文件时，用户自己填直链和文件名。
+ * 下载、同名冲突、哈希记账都复用市场那套流程，这里只现造一个单文件条目。
+ */
+export const manualAppPlugin = (url: string, fileName = '') => {
+  const trimmed = url.trim();
+  if (!/^https?:\/\//i.test(trimmed)) throw new Error('请填写以 http:// 或 https:// 开头的直链');
+  const derived = appPluginNameFromUrl(trimmed);
+  const wanted = (fileName.trim() || derived).trim();
+  if (!wanted) throw new Error('请填写文件名，例如 my-plugin.js');
+  const target = wanted.toLowerCase().endsWith('.js') ? wanted : `${wanted}.js`;
+  if (!isSafeFileName(target)) throw new Error(`文件名不合法：${target}`);
+  const files: PluginFile[] = [{name: '手动安装', description: '来自手动填写的直链', url: trimmed}];
+  return {
+    plugin: {
+      name: target,
+      type: 'app' as PluginType,
+      description: '手动安装的 APP 插件',
+      files,
+    },
+    files,
+    renames: target === derived ? undefined : {[derived || '*']: target},
+  };
+};
 
 /** app 插件的文件列表（过滤掉没有直链的项） */
 export const appPluginFiles = (plugin: Plugin) =>
@@ -422,10 +461,15 @@ const appInstallPlan = (plugin: Plugin, options: InstallOptions = {}) => {
     try {
       name = appFileName(file.url);
     } catch {
+      name = '';
+    }
+    /** renames 按 URL 里的文件名索引；'*' 是手动安装直链取不到文件名时的兜底 */
+    const renamed = options.renames?.[name] ?? options.renames?.['*'];
+    const target = renamed?.trim() || name;
+    if (!isSafeFileName(target)) {
+      if (renamed) throw new Error(`目标文件名不合法：${target}`);
       return [];
     }
-    const target = options.renames?.[name]?.trim() || name;
-    if (!isSafeFileName(target)) throw new Error(`目标文件名不合法：${target}`);
     return [{url: file.url, name, target, finalUrl: proxiedUrl(file.url)}];
   });
   if (!plan.length) throw new Error('App 插件缺少文件下载地址');
@@ -457,7 +501,8 @@ export const installPlugin = (
   if (plugin.type === 'app') {
     const plan = appInstallPlan(plugin, options);
     return executeStreaming(appInstallCommand(plan), onLog, 5 * 60 * 1000, signal).then(async output => {
-      await recordAppInstall(plugin, plan.map(item => item.target));
+      /** 未知来源文件不记归属：卸载列表里一直显示为未知来源，不会伪装成某个市场插件 */
+      if (!options.thirdParty) await recordAppInstall(plugin, plan.map(item => item.target));
       return output;
     });
   }
