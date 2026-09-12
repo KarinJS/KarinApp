@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.2.1](https://github.com/KarinJS/KarinApp/compare/v1.2.0...v1.2.1) (2026-09-12)
+
+
+### Bug Fixes
+
+* 优化APP插件手动安装 ([aeacfd6](https://github.com/KarinJS/KarinApp/commit/aeacfd6dc30fbcc480e3ade1b9b850d07d17a59b))
+* 优化终端唤起输入法的时候被输入法遮挡的问题 ([e5e248e](https://github.com/KarinJS/KarinApp/commit/e5e248e5efa9f031530e8e023278c696fd08dd27))
+* 新增依赖管理和Git插件安装 ([07f4cad](https://github.com/KarinJS/KarinApp/commit/07f4cad0c374833500e198008f51c531c40af7d2))
+
 ## [1.2.0](https://github.com/KarinJS/KarinApp/compare/v1.1.3...v1.2.0) (2026-09-12)
 
 
