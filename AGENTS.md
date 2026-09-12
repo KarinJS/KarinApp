@@ -33,6 +33,7 @@ Karin is an Android-first React Native app for managing a bundled proot environm
 - Settings shows the real installed node-karin version; its bottom sheet fetches the version list from npm (`npm view node-karin versions`) and switches versions via `pnpm i node-karin@<version>`
 - Settings 的「GitHub 加速」只放一个输入框（placeholder 示意 `https://gh-proxy.com/`）加一个保存按钮，留空即直连，值存在 `/root/.karinapp/settings.json`；只对 GitHub 域名生效：git clone/fetch（`pluginService`）、app 插件 curl 下载、README 图片（`MarkdownView`），命令是同步拼的所以启动时/插件页加载时会先 `loadAppSettings()`
 - Plugins 顶部筛选：全部 / 已安装 / 未安装 常驻，分类（官方插件、工具、适配器、娱乐 + 市场新标签）收在可展开按钮里，展开后换行平铺全部筛选项，当前分类显示在顶部统计行；市场标签（`category`/`categories`/`tags`）由 `pluginService` 归一，市场新增分类不用改 UI
+- Plugins 顶部统计行下面是搜索框（`PluginsScreen` 的 `query`）：匹配插件名或市场里的介绍（不区分大小写），和分类/安装状态筛选叠加生效，搜索时统计行改成 `搜索「x」· N 个结果`，右侧 `X` 清空，无结果时提示 `没有匹配「x」的插件`
 - app 类型插件是多文件集合：js 文件统一落在 `/root/karin/plugins/karin-plugin-example`，市场条目按插件名正常展示，另外固定有一个 `karin-plugin-example` 目录条目（只能卸载，空目录显示“暂未安装 APP 插件”）
 - app 插件（含目录条目）只要涉及 2 个以上文件，安装和卸载都会弹出勾选列表，默认全部不勾选，只处理勾选的文件；只有 1 个文件时才直接执行
 - app 插件归属用 sha256 判断：`appPluginFiles` / `appInstallPlan` 只用于下载计划，已安装状态靠 `/root/karin/.karin-app-plugins.json`（安装时记录的 文件名+哈希）与目录里的实际文件哈希匹配，所以改文件名不会被误判、外来同名文件也不会算作该插件；装卸都不按插件名建目录

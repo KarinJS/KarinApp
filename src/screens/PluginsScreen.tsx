@@ -9,6 +9,7 @@ import {
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   View,
 } from 'react-native';
 import {
@@ -25,6 +26,7 @@ import {
   Package,
   Plug,
   RefreshCw,
+  Search,
   SlidersHorizontal,
   Tag,
   Trash2,
@@ -151,6 +153,10 @@ const marketFileLabel = (plugin: Plugin, name: string) => {
   return matched ? [matched.name, matched.description].filter(Boolean).join(' · ') : '';
 };
 
+/** 搜索匹配：插件名或市场里的介绍包含关键字（已在外面转成小写） */
+const matchesQuery = (plugin: Plugin, query: string) =>
+  plugin.name.toLowerCase().includes(query) || (plugin.description ?? '').toLowerCase().includes(query);
+
 function FilterChip({
   active,
   colors,
@@ -260,6 +266,7 @@ export default function PluginsScreen({colors}: {colors: Colors}) {
   const [error, setError] = useState('');
   const [filter, setFilter] = useState('all');
   const [filtersOpen, setFiltersOpen] = useState(false);
+  const [query, setQuery] = useState('');
   const [tasks, setTasks] = useState<Record<string, PluginTask>>({});
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [tasksOpen, setTasksOpen] = useState(false);
@@ -345,8 +352,12 @@ export default function PluginsScreen({colors}: {colors: Colors}) {
     [filter, filters],
   );
 
+  /** 搜索关键字：在当前筛选结果里再筛一层，插件名和介绍都算命中 */
+  const search = query.trim().toLowerCase();
+
   const visibleRows = useMemo(() => {
     const matched = rows.filter(plugin => {
+      if (search && !matchesQuery(plugin, search)) return false;
       if (filter === 'all') return true;
       if (filter === 'installed') return Boolean(plugin.installed);
       if (filter === 'uninstalled') return !plugin.installed;
@@ -357,7 +368,12 @@ export default function PluginsScreen({colors}: {colors: Colors}) {
       if (Boolean(left.installed) !== Boolean(right.installed)) return left.installed ? -1 : 1;
       return left.name.localeCompare(right.name);
     });
-  }, [filter, rows]);
+  }, [filter, rows, search]);
+
+  /** 顶部统计行：搜索时优先显示命中数 */
+  let summaryText = `共 ${counts.all} 个插件 · 已安装 ${counts.installed}`;
+  if (activeCategory) summaryText = `${activeCategory.label} · ${counts[activeCategory.id] ?? 0} 个插件`;
+  if (search) summaryText = `搜索「${query.trim()}」· ${visibleRows.length} 个结果`;
 
   const runningTaskName = Object.values(tasks).find(task => task.status === 'running')?.name ?? null;
   const taskList = Object.values(tasks).sort((left, right) => right.startedAt - left.startedAt);
@@ -530,9 +546,7 @@ export default function PluginsScreen({colors}: {colors: Colors}) {
     <View style={styles.container}>
       <View style={styles.summaryRow}>
         <Text style={[styles.summary, {color: colors.muted}]}>
-          {activeCategory
-            ? `${activeCategory.label} · ${counts[activeCategory.id] ?? 0} 个插件`
-            : `共 ${counts.all} 个插件 · 已安装 ${counts.installed}`}
+          {summaryText}
         </Text>
         <Pressable
           accessibilityLabel='刷新插件列表'
@@ -546,6 +560,30 @@ export default function PluginsScreen({colors}: {colors: Colors}) {
             <RefreshCw color={colors.muted} size={15} />
           )}
         </Pressable>
+      </View>
+
+      <View
+        style={[
+          styles.searchRow,
+          {backgroundColor: colors.neutralSoft, borderColor: search ? colors.accent : colors.border},
+        ]}>
+        <Search color={search ? colors.accent : colors.muted} size={14} />
+        <TextInput
+          accessibilityLabel='搜索插件'
+          autoCapitalize='none'
+          autoCorrect={false}
+          onChangeText={setQuery}
+          placeholder='搜索插件名或介绍'
+          placeholderTextColor={colors.muted}
+          returnKeyType='search'
+          style={[styles.searchInput, {color: colors.text}]}
+          value={query}
+        />
+        {query ? (
+          <Pressable accessibilityLabel='清空搜索' accessibilityRole='button' onPress={() => setQuery('')} style={styles.searchClear}>
+            <X color={colors.muted} size={14} />
+          </Pressable>
+        ) : null}
       </View>
 
       <View style={styles.filterBar}>
@@ -631,6 +669,8 @@ export default function PluginsScreen({colors}: {colors: Colors}) {
       ) : (
         <ScrollView
           contentContainerStyle={styles.listContent}
+          keyboardDismissMode='on-drag'
+          keyboardShouldPersistTaps='handled'
           refreshControl={
             <RefreshControl
               colors={[colors.accent]}
@@ -641,7 +681,7 @@ export default function PluginsScreen({colors}: {colors: Colors}) {
           }>
           {visibleRows.length === 0 ? (
             <Text style={[styles.empty, {color: colors.muted}]}>
-              {rows.length === 0 ? '暂无插件' : '没有符合条件的插件'}
+              {rows.length === 0 ? '暂无插件' : search ? `没有匹配「${query.trim()}」的插件` : '没有符合条件的插件'}
             </Text>
           ) : (
             visibleRows.map(plugin => {
@@ -1050,6 +1090,20 @@ const styles = StyleSheet.create({
   summaryRow: {height: 38, paddingHorizontal: 14, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between'},
   summary: {fontSize: 11, fontWeight: '600'},
   refreshButton: {width: 30, height: 30, borderRadius: 15, borderWidth: 1, alignItems: 'center', justifyContent: 'center'},
+  searchRow: {
+    minHeight: 36,
+    marginHorizontal: 12,
+    marginTop: 6,
+    marginBottom: 6,
+    borderWidth: 1,
+    borderRadius: 10,
+    paddingHorizontal: 10,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 7,
+  },
+  searchInput: {flex: 1, fontSize: 12, paddingVertical: 4},
+  searchClear: {width: 22, height: 22, alignItems: 'center', justifyContent: 'center'},
   filterBar: {flexDirection: 'row', alignItems: 'center', paddingRight: 12},
   filterScroll: {flexGrow: 0, flexShrink: 1},
   filterContent: {paddingHorizontal: 12, paddingBottom: 8, gap: 7},
