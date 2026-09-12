@@ -9,6 +9,9 @@ const REQUEST_TIMEOUT_MS = 20_000;
 const MAX_LOG_LINES = 200;
 /** 下载日志按百分比合并，避免几百行刷屏 */
 const LOG_PERCENT_STEP = 5;
+/** 连接被掐断（后台化最典型）时自动续传重试的次数与等待时间 */
+const DOWNLOAD_ATTEMPTS = 3;
+const RETRY_DELAYS_MS = [1500, 4000];
 
 type AppInfo = {versionName: string; versionCode: number};
 type ApkInfo = {versionName: string; versionCode: number; size: number; sha256: string} | null;
@@ -24,6 +27,8 @@ type NativeUpdater = {
   inspectApk: () => Promise<ApkInfo>;
   inspectPartial: () => Promise<PartialInfo | null>;
   downloadApk: (url: string) => Promise<DownloadResult>;
+  startDownloadKeepAlive: () => Promise<boolean>;
+  stopDownloadKeepAlive: () => Promise<boolean>;
   deleteApk: () => Promise<boolean>;
   installApk: () => Promise<InstallResult>;
   openInstallPermissionSettings: () => Promise<boolean>;
@@ -51,7 +56,7 @@ export type UpdateState = {
   /** 0~1，未知为 -1 */
   progress: number;
   release: UpdateRelease | null;
-  /** 可续传的断点信息；没有半截包时为 null */
+  /** 半截包信息：下载中就是本次已收到的字节，没有半截包时为 null */
   partial: {received: number; total: number} | null;
   /** 用户已经点过下载、存在下载任务（用来决定「下载任务」悬浮按钮是否出现），检查更新时重置 */
   task: boolean;
@@ -174,6 +179,14 @@ const partialPercent = (partial: {received: number; total: number} | null) => {
   return ratio >= 0 ? Math.floor(ratio * 100) : 0;
 };
 
+const delay = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms));
+
+/** HTTP 状态码、断点失效、本地文件问题重试也没用；断流、超时、连接被系统掐断才值得续传重试。 */
+const worthRetry = (error: unknown) => {
+  const message = messageOf(error);
+  return !/HTTP \d{3}/.test(message) && !message.includes('断点已失效') && !message.includes('无法');
+};
+
 const downloadRelease = async (updater: NativeUpdater, release: UpdateRelease) => {
   let lastError: unknown = new Error('下载失败');
   let result: DownloadResult | null = null;
@@ -184,7 +197,8 @@ const downloadRelease = async (updater: NativeUpdater, release: UpdateRelease) =
       const total = (event.total ?? 0) > 0 ? (event.total as number) : release.size;
       const received = event.received ?? 0;
       const ratio = total > 0 ? Math.min(1, received / total) : -1;
-      setState({progress: ratio});
+      /** 断点信息跟着进度一起更新，弹窗里的「已下载 x / y」才不会停在开始下载时的快照上 */
+      setState({progress: ratio, partial: total > 0 ? {received, total} : null});
       const percent = ratio >= 0 ? Math.floor(ratio * 100) : -1;
       if (percent < 0) {
         pushLog(`已下载 ${formatSize(received)}`);
@@ -195,15 +209,24 @@ const downloadRelease = async (updater: NativeUpdater, release: UpdateRelease) =
     },
   );
   try {
-    for (const url of urlCandidates(release.downloadUrl)) {
-      try {
-        pushLog(`开始下载：${url}`);
-        result = await updater.downloadApk(url);
-        break;
-      } catch (error) {
-        lastError = error;
-        pushLog(`下载失败：${messageOf(error)}`);
+    for (let attempt = 0; attempt < DOWNLOAD_ATTEMPTS && !result; attempt += 1) {
+      if (attempt > 0) {
+        const wait = RETRY_DELAYS_MS[attempt - 1] ?? RETRY_DELAYS_MS[RETRY_DELAYS_MS.length - 1];
+        pushLog(`连接中断，${Math.round(wait / 1000)} 秒后自动续传（第 ${attempt + 1}/${DOWNLOAD_ATTEMPTS} 次）`);
+        await delay(wait);
+        loggedPercent = -1;
       }
+      for (const url of urlCandidates(release.downloadUrl)) {
+        try {
+          pushLog(`${attempt > 0 ? '继续下载' : '开始下载'}：${url}`);
+          result = await updater.downloadApk(url);
+          break;
+        } catch (error) {
+          lastError = error;
+          pushLog(`下载失败：${messageOf(error)}`);
+        }
+      }
+      if (!result && !worthRetry(lastError)) break;
     }
   } finally {
     subscription.remove();
@@ -294,7 +317,16 @@ export async function downloadUpdate(): Promise<void> {
       progress: Math.max(0, partialRatio(partial)),
       partial,
     });
-    await downloadRelease(native, release);
+    /**
+     * 整个下载流程（含断线自动续传）都在前台服务下跑：切后台、息屏都不会被系统掐断连接；
+     * 原生侧起不了前台服务也只是没有保活，不能因此让下载失败。
+     */
+    await native.startDownloadKeepAlive().catch(() => {});
+    try {
+      await downloadRelease(native, release);
+    } finally {
+      await native.stopDownloadKeepAlive().catch(() => {});
+    }
     setState({phase: 'ready', message: `v${release.version} 下载完成，等待安装`, progress: 1, partial: null});
   } catch (error) {
     pushLog(`失败：${messageOf(error)}`);
@@ -313,18 +345,16 @@ export async function downloadUpdate(): Promise<void> {
   }
 }
 
-/** 安装已下载的更新：先优雅停止 proot 容器（QUIT 后超时强杀），再拉起系统安装器。 */
-export async function installDownloadedUpdate(): Promise<InstallResult> {
+/**
+ * 只拉起系统安装器：缺少「安装未知应用」权限时返回 permission，由 JS 引导去设置。
+ * 用户在授权页返回后可以再调一次，不用重跑停止容器那一套。
+ */
+export async function launchInstaller(): Promise<InstallResult> {
   if (!native) {
     setState({message: 'KarinUpdater 原生模块不可用，请重新编译安装应用'});
     return 'failed';
   }
   try {
-    pushLog('正在停止 Karin…');
-    await karinService.stop().catch(() => {});
-    pushLog('正在让 proot 容器优雅退出（超时后强杀）…');
-    await prootController.stop(false).catch(() => {});
-    pushLog('容器已退出，拉起系统安装器');
     const result = await native.installApk();
     if (result === 'launched') {
       pushLog('安装器已启动，安装完成后重新打开应用即可');
@@ -339,6 +369,22 @@ export async function installDownloadedUpdate(): Promise<InstallResult> {
     setState({message: `安装失败：${messageOf(error)}`});
     return 'failed';
   }
+}
+
+/** 安装已下载的更新：先优雅停止 proot 容器（QUIT 后超时强杀），再拉起系统安装器。 */
+export async function installDownloadedUpdate(): Promise<InstallResult> {
+  if (native) {
+    try {
+      pushLog('正在停止 Karin…');
+      await karinService.stop().catch(() => {});
+      pushLog('正在让 proot 容器优雅退出（超时后强杀）…');
+      await prootController.stop(false).catch(() => {});
+      pushLog('容器已退出，拉起系统安装器');
+    } catch (error) {
+      pushLog(`停止容器失败：${messageOf(error)}`);
+    }
+  }
+  return launchInstaller();
 }
 
 export async function openInstallPermission(): Promise<boolean> {

@@ -5,6 +5,7 @@ import LogConsole from './LogConsole';
 import {Colors} from '../theme/colors';
 import {formatSize} from '../services/updateService';
 import type {UpdateState} from '../services/updateService';
+import {primaryTextStyle} from '../theme/styles';
 
 type Props = {
   visible: boolean;
@@ -12,11 +13,13 @@ type Props = {
   update: UpdateState;
   /** 下载失败或中断：进度条转红、状态显示错误信息，并出现默认折叠的错误日志 */
   failed?: boolean;
+  /** 传了才在失败时显示「继续下载」按钮：从半截包续传，不用重新检查更新 */
+  onRetry?: () => void;
   onClose: () => void;
 };
 
 /** 下载任务弹窗：显示进度条与状态，只有失败/中断时才出现错误日志，且默认折叠。 */
-export default function UpdateTaskSheet({visible, colors, update, failed, onClose}: Props) {
+export default function UpdateTaskSheet({visible, colors, update, failed, onRetry, onClose}: Props) {
   const [logOpen, setLogOpen] = useState(false);
 
   /** 每次重新打开都把日志收回去 */
@@ -67,6 +70,12 @@ export default function UpdateTaskSheet({visible, colors, update, failed, onClos
             </Text>
           </View>
 
+          {failed && onRetry ? (
+            <Pressable onPress={onRetry} style={[styles.retry, {backgroundColor: colors.accent}]}>
+              <Text style={primaryTextStyle}>继续下载</Text>
+            </Pressable>
+          ) : null}
+
           {failed ? (
             <View style={[styles.logWrap, {borderColor: colors.border}]}>
               <Pressable onPress={() => setLogOpen(open => !open)} style={styles.logHeader}>
@@ -96,6 +105,7 @@ const styles = StyleSheet.create({
   percent: {fontSize: 12, fontWeight: '800'},
   statusRow: {flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 12},
   status: {flex: 1, fontSize: 12, fontWeight: '600', lineHeight: 17},
+  retry: {minHeight: 40, borderRadius: 9, alignItems: 'center', justifyContent: 'center', marginTop: 14},
   logWrap: {borderWidth: 1, borderRadius: 10, marginTop: 14, paddingHorizontal: 12, paddingBottom: 10},
   logHeader: {flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingVertical: 10},
   logTitle: {fontSize: 11, fontWeight: '700'},

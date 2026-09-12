@@ -1,10 +1,12 @@
-import {useCallback, useEffect, useState} from 'react';
+import {useCallback, useEffect, useRef, useState} from 'react';
+import {AppState} from 'react-native';
 import {
   checkForUpdate,
   downloadUpdate,
   formatSize,
   getUpdateState,
   installDownloadedUpdate,
+  launchInstaller,
   openInstallPermission,
   refreshAppInfo,
   subscribeUpdate,
@@ -20,8 +22,24 @@ export type UpdateDialog = 'download' | 'install' | 'permission' | null;
 export function useUpdateFlow() {
   const [update, setUpdate] = useState<UpdateState>(getUpdateState);
   const [dialog, setDialog] = useState<UpdateDialog>(null);
+  /** 用户刚去「安装未知应用」授权页：回到前台时自动接着装，不用再点检查更新 */
+  const awaitingPermission = useRef(false);
 
   useEffect(() => subscribeUpdate(setUpdate), []);
+
+  /** 从授权页返回：系统不会自己继续，这里补一次；还是没授权就重新弹授权提示 */
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', next => {
+      if (next !== 'active' || !awaitingPermission.current) return;
+      awaitingPermission.current = false;
+      launchInstaller()
+        .then(result => {
+          if (result === 'permission') setDialog('permission');
+        })
+        .catch(() => {});
+    });
+    return () => subscription.remove();
+  }, []);
 
   useEffect(() => {
     refreshAppInfo().catch(() => {});
@@ -71,8 +89,17 @@ export function useUpdateFlow() {
   }, []);
 
   const confirmPermission = useCallback(() => {
+    awaitingPermission.current = true;
     setDialog(null);
     openInstallPermission().catch(() => {});
+  }, []);
+
+  /** 下载任务里点「继续下载」：直接从半截包续传，不用重新检查更新 */
+  const retryDownload = useCallback(async () => {
+    const current = getUpdateState();
+    if (current.phase === 'downloading' || !current.release) return;
+    await downloadUpdate().catch(() => {});
+    if (getUpdateState().phase === 'ready') setDialog('install');
   }, []);
 
   return {
@@ -87,6 +114,7 @@ export function useUpdateFlow() {
     confirmDownload,
     confirmInstall,
     confirmPermission,
+    retryDownload,
   };
 }
 

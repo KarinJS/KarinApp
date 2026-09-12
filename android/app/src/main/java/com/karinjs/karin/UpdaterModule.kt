@@ -12,6 +12,7 @@ import com.facebook.react.bridge.Promise
 import com.facebook.react.bridge.ReactApplicationContext
 import com.facebook.react.bridge.ReactContextBaseJavaModule
 import com.facebook.react.bridge.ReactMethod
+import com.facebook.react.bridge.WritableMap
 import com.facebook.react.modules.core.DeviceEventManagerModule
 import java.io.File
 import java.io.FileOutputStream
@@ -88,7 +89,27 @@ class UpdaterModule(private val context: ReactApplicationContext) : ReactContext
    * 进度通过 KarinUpdaterProgress 事件回传，完成后返回 sha256 与字节数。
    */
   @ReactMethod
-  fun downloadApk(url: String, promise: Promise) = runAsync(promise, "UPDATER_DOWNLOAD_FAILED") {
+  fun downloadApk(url: String, promise: Promise) = runAsync(promise, "UPDATER_DOWNLOAD_FAILED") { download(url) }
+
+  /**
+   * 整个下载流程（含 JS 侧的自动续传重试）开始时顶到前台，由 [stopDownloadKeepAlive] 收尾。
+   * 成对调用而不是每次 downloadApk 自己开关：后台不允许再起前台服务，重试时不能再走 start。
+   */
+  @ReactMethod
+  fun startDownloadKeepAlive(promise: Promise) {
+    UpdateForegroundService.start(context)
+    promise.resolve(true)
+  }
+
+  /** 下载流程结束：撤掉常驻通知并释放唤醒锁/Wi-Fi 锁。 */
+  @ReactMethod
+  fun stopDownloadKeepAlive(promise: Promise) {
+    UpdateForegroundService.stop(context)
+    promise.resolve(true)
+  }
+
+  /** 真正的下载逻辑，说明见 [downloadApk]。 */
+  private fun download(url: String): WritableMap {
     val target = apkFile()
     val part = partFile()
     /** 只有同地址、同 ETag 的半截文件才能续传，避免把两个版本的字节拼在一起 */
@@ -99,7 +120,7 @@ class UpdaterModule(private val context: ReactApplicationContext) : ReactContext
       emitProgress(downloaded, resumeMeta.total)
       if (!part.renameTo(target)) throw IllegalStateException("无法写入安装包")
       deletePartialFiles()
-      return@runAsync downloadResult(target)
+      return downloadResult(target)
     }
     val resuming = resumeMeta != null && downloaded > 0L
     if (!resuming) deletePartialFiles()
@@ -151,7 +172,7 @@ class UpdaterModule(private val context: ReactApplicationContext) : ReactContext
       if (target.exists() && !target.delete()) throw IllegalStateException("无法覆盖旧安装包")
       if (!part.renameTo(target)) throw IllegalStateException("无法写入安装包")
       deletePartialFiles()
-      downloadResult(target)
+      return downloadResult(target)
     } finally {
       connection?.disconnect()
     }
@@ -270,6 +291,8 @@ class UpdaterModule(private val context: ReactApplicationContext) : ReactContext
   @ReactMethod fun removeListeners(count: Int) = Unit
 
   private fun emitProgress(received: Long, total: Long) {
+    /** 常驻通知里的进度：总大小未知时（total<0 语义）显示不确定进度条 */
+    UpdateForegroundService.progress(context, if (total > 0L) ((received * 100) / total).toInt() else -1)
     if (!context.hasActiveReactInstance()) return
     val event = Arguments.createMap().apply {
       putDouble("received", received.toDouble())

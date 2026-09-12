@@ -36,7 +36,7 @@ export default function UpdateDialogs({colors, flow}: Props) {
       <ConfirmDialog
         visible={dialog === 'permission'}
         title="需要安装权限"
-        body="系统要求先允许本应用「安装未知应用」。点「去设置」打开授权页，允许后返回再点一次安装。"
+        body="系统要求先允许本应用「安装未知应用」。点「去设置」打开授权页并允许，返回后会自动继续安装。"
         confirmText="去设置"
         tone="primary"
         colors={colors}

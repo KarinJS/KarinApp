@@ -50,6 +50,11 @@ export default function AboutScreen({colors, karinVersion, onBack}: Props) {
   const {update, busy} = flow;
   const [taskOpen, setTaskOpen] = useState(false);
 
+  /** 下载完成要弹「是否安装」，先把下载任务弹窗收掉，免得两个 Modal 叠在一起 */
+  useEffect(() => {
+    if (taskOpen && update.phase === 'ready') setTaskOpen(false);
+  }, [taskOpen, update.phase]);
+
   useEffect(() => {
     const subscription = BackHandler.addEventListener('hardwareBackPress', () => {
       onBack();
@@ -138,7 +143,14 @@ export default function AboutScreen({colors, karinVersion, onBack}: Props) {
       ) : null}
       {notice ? <Toast message={notice} colors={colors} bottomOffset={TOAST_BOTTOM} /> : null}
       <UpdateDialogs colors={colors} flow={flow} />
-      <UpdateTaskSheet colors={colors} update={update} failed={failed} visible={taskOpen} onClose={() => setTaskOpen(false)} />
+      <UpdateTaskSheet
+        colors={colors}
+        update={update}
+        failed={failed}
+        visible={taskOpen}
+        onRetry={flow.retryDownload}
+        onClose={() => setTaskOpen(false)}
+      />
     </View>
   );
 }
