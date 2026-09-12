@@ -26,7 +26,7 @@ Karin is an Android-first React Native app for managing a bundled proot environm
 ## Current UI
 
 - Bottom navigation: Home, Plugins, Settings
-- Home: Karin runtime, memory placeholder, architecture, runtime-log and file-manager shortcuts
+- Home: Karin runtime, memory placeholder, Android 版本（`Platform.constants.Release`，副行是 API 级别；只有 arm64 所以不展示架构）, runtime-log and file-manager shortcuts
 - 运行日志页（Home 的「运行日志」进入，`TerminalScreen`）：只展示 Karin 常驻进程的 stdout/stderr，不做通用终端。日志由 `karinLogService` 在 App 挂载时开始捕获（环形缓冲 2000 行、~120ms 合并通知、把 ANSI 颜色解析成样式段），所以进页面之前的历史也在；列表贴底自动跟随（偏移量用原生内容高度减可视高度算，不用 FlatList 的 `scrollToEnd`：它按已量出的行高估算末尾位置，长日志在行内换行撑高后估算值偏小、只能停在那一行的第一行，跟随状态只由用户拖拽/惯性结束事件改，程序化贴底触发的 `onScroll` 不算），上滑查看历史时暂停，日志颜色由 `src/utils/ansi.ts` 解析（SGR → 样式段：16 色 + bold/dim/underline，`38;5;n` 只映射前 16 色、真彩色忽略，其余光标/清屏/OSC 序列丢弃），取色在渲染时按明暗主题各用一套调色板，所以切换主题不需要重新解析；日志行用嵌套 `Text` 上色 + `Text selectable`，长按走 Android 原生文本选择（可只选一段、系统菜单里复制，复制出来的是不含转义序列的纯文本），标题栏只保留清空；底部输入框回车把一行文本写进 node-karin 的 stdin（本地回显 `$ 命令`），Karin 未运行时输入禁用
 - Top-right container indicator opens restart/force-restart actions
 - Bottom-right power button independently starts/stops Karin in UI state

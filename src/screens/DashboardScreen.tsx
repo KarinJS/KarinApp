@@ -1,6 +1,6 @@
 import React from 'react';
-import {Pressable, ScrollView, StyleSheet, Text, View} from 'react-native';
-import {Cpu, FolderOpen, MemoryStick, Terminal as TerminalIcon} from 'lucide-react-native';
+import {Platform, Pressable, ScrollView, StyleSheet, Text, View} from 'react-native';
+import {FolderOpen, MemoryStick, Smartphone, Terminal as TerminalIcon} from 'lucide-react-native';
 import {Colors} from '../theme/colors';
 
 type Props = {
@@ -11,6 +11,9 @@ type Props = {
   onOpenFiles: () => void;
   onOpenLogs: () => void;
 };
+
+/** Android 版本名（如 14）；个别 ROM 读不到就退回 API 级别 */
+const androidVersion = Platform.OS === 'android' ? Platform.constants.Release : String(Platform.Version);
 
 function formatMemory(bytes: number): string {
   if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
@@ -42,12 +45,12 @@ export default function DashboardScreen({colors, karinRunning, karinSeconds, mem
           colors={colors}
         />
         <InfoCard
-          title="系统架构"
-          value="arm64"
-          description="Android 运行环境"
+          title="安卓版本"
+          value={`Android ${androidVersion}`}
+          description={`API ${Platform.Version}`}
           color={colors.orange}
           softColor={colors.orangeSoft}
-          icon="cpu"
+          icon="smartphone"
           colors={colors}
         />
       </View>
@@ -80,7 +83,7 @@ type InfoCardProps = {
   description: string;
   color: string;
   softColor: string;
-  icon: 'memory' | 'cpu';
+  icon: 'memory' | 'smartphone';
   colors: Colors;
 };
 
@@ -97,8 +100,8 @@ function InfoCard({title, value, description, color, softColor, icon, colors}: I
   );
 }
 
-function InfoIcon({name, color}: {name: 'memory' | 'cpu'; color: string}) {
-  return name === 'cpu' ? <Cpu size={15} color={color} /> : <MemoryStick size={15} color={color} />;
+function InfoIcon({name, color}: {name: 'memory' | 'smartphone'; color: string}) {
+  return name === 'smartphone' ? <Smartphone size={15} color={color} /> : <MemoryStick size={15} color={color} />;
 }
 
 type ActionProps = {
