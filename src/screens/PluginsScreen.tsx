@@ -55,9 +55,11 @@ import {
   appPluginNameFromUrl,
   fetchPluginDetails,
   githubUrlFrom,
+  gitPluginNameFromUrl,
   installPlugin,
   loadPluginSnapshot,
   manualAppPlugin,
+  manualGitPlugin,
   npmPackageUrl,
   Plugin,
   PluginDetails,
@@ -65,6 +67,7 @@ import {
   PluginSnapshot,
   PluginType,
   pluginCategoryIds,
+  pluginInstallPath,
   removePlugin,
 } from '../services/pluginService';
 
@@ -82,7 +85,9 @@ type PluginDetailState =
   | {status: 'loading'; npmUrl: string}
   | {status: 'ready'; details: PluginDetails}
   | {status: 'error'; npmUrl: string}
-  | {status: 'files'};
+  | {status: 'files'}
+  /** 本地探测到的 git 插件：npm 上没有条目，没有 README 可看 */
+  | {status: 'local'};
 
 type PluginTask = {
   name: string;
@@ -282,7 +287,7 @@ function TaskCard({
   );
 }
 
-export default function PluginsScreen({colors}: {colors: Colors}) {
+export default function PluginsScreen({colors, onOpenDeps}: {colors: Colors; onOpenDeps: () => void}) {
   const insets = useSafeAreaInsets();
   const [snapshot, setSnapshot] = useState<PluginSnapshot>({plugins: [], appDirFiles: []});
   const [loading, setLoading] = useState(true);
@@ -305,7 +310,13 @@ export default function PluginsScreen({colors}: {colors: Colors}) {
   const [manualUrl, setManualUrl] = useState('');
   const [manualName, setManualName] = useState('');
   const [manualError, setManualError] = useState('');
-  /** 直链表单被输入法顶上来时需要的底部内边距，0 表示键盘没弹 */
+  /** 市场里没有的 git 插件：用户自己填仓库地址、分支和目录名 */
+  const [gitOpen, setGitOpen] = useState(false);
+  const [gitUrl, setGitUrl] = useState('');
+  const [gitName, setGitName] = useState('');
+  const [gitBranch, setGitBranch] = useState('');
+  const [gitError, setGitError] = useState('');
+  /** 居中的表单（直链安装 / git 安装）被输入法顶上来时需要的底部内边距，0 表示键盘没弹 */
   const [manualKeyboardInset, setManualKeyboardInset] = useState(0);
   const [selectedFiles, setSelectedFiles] = useState<Record<string, boolean>>({});
   const taskCancellers = useRef<Record<string, AbortController>>({});
@@ -313,6 +324,7 @@ export default function PluginsScreen({colors}: {colors: Colors}) {
   const loadedOnce = useRef(false);
   const sheetY = useRef(new Animated.Value(330)).current;
   const manualStep = useRef<React.ComponentRef<typeof View>>(null);
+  const gitStep = useRef<React.ComponentRef<typeof View>>(null);
 
   const load = useCallback(async (force = false) => {
     if (loadedOnce.current) setRefreshing(true);
@@ -343,17 +355,18 @@ export default function PluginsScreen({colors}: {colors: Colors}) {
   }, [sheetY, tasksOpen]);
 
   // Android 15 起 targetSdk 35+ 强制 edge-to-edge，Modal 里的 adjustResize 同样不再缩小窗口，
-  // 输入法会盖住居中的直链表单。这里按表单容器在窗口里的真实底边算要抬多高：窗口已经被系统缩过
-  // 的设备（非 edge-to-edge）算出来是 0，不会重复抬；+ insets.bottom 是因为原生上报的键盘高度
-  // 扣掉了导航栏，而 edge-to-edge 下内容本来就画到导航栏底下。
+  // 输入法会盖住居中的表单（直链安装 / git 安装）。这里按表单容器在窗口里的真实底边算要抬多高：
+  // 窗口已经被系统缩过的设备（非 edge-to-edge）算出来是 0，不会重复抬；+ insets.bottom 是因为
+  // 原生上报的键盘高度扣掉了导航栏，而 edge-to-edge 下内容本来就画到导航栏底下。
   useEffect(() => {
-    if (!manualOpen) {
+    const target = manualOpen ? manualStep : gitOpen ? gitStep : null;
+    if (!target) {
       setManualKeyboardInset(0);
       return;
     }
     const show = Keyboard.addListener('keyboardDidShow', event => {
       const keyboardHeight = event.endCoordinates.height + insets.bottom;
-      manualStep.current?.measureInWindow((_x, y, _width, height) => {
+      target.current?.measureInWindow((_x, y, _width, height) => {
         const bottomGap = Dimensions.get('screen').height - (y + height);
         setManualKeyboardInset(Math.max(0, Math.round(keyboardHeight - bottomGap)));
       });
@@ -363,7 +376,7 @@ export default function PluginsScreen({colors}: {colors: Colors}) {
       show.remove();
       hide.remove();
     };
-  }, [insets.bottom, manualOpen]);
+  }, [gitOpen, insets.bottom, manualOpen]);
 
   const appDirFiles = snapshot.appDirFiles;
   const dirNames = useMemo(() => new Set(appDirFiles.map(file => file.name)), [appDirFiles]);
@@ -375,6 +388,14 @@ export default function PluginsScreen({colors}: {colors: Colors}) {
     return wanted.toLowerCase().endsWith('.js') ? wanted : `${wanted}.js`;
   }, [manualName, manualUrl]);
   const manualConflict = manualTarget !== '' && dirNames.has(manualTarget);
+  /** git 安装表单里实时预览的目标目录名，以及会不会覆盖已装的插件目录 */
+  const gitTarget = useMemo(() => (gitName.trim() || gitPluginNameFromUrl(gitUrl)).trim(), [gitName, gitUrl]);
+  const gitNameValid = gitTarget === '' || /^(?:@[\w.-]+\/)?[\w.-]+$/.test(gitTarget);
+  const installedNames = useMemo(
+    () => new Set(snapshot.plugins.filter(plugin => plugin.installed).map(plugin => plugin.name)),
+    [snapshot.plugins],
+  );
+  const gitConflict = gitTarget !== '' && installedNames.has(gitTarget);
   /** 旧版本原生层没有导入模块时，本地文件那条路给个明确提示而不是点了没反应 */
   const localImportAvailable = useMemo(() => canImportLocalAppPlugin(), []);
   /** karin-plugin-example 是固定条目，永远排在最前面 */
@@ -451,7 +472,11 @@ export default function PluginsScreen({colors}: {colors: Colors}) {
         ? githubUrlFrom(detailPlugin.homepage)
         : undefined;
   const detailNpmUrl =
-    detailState.status === 'ready' ? detailState.details.npmUrl : detailState.status === 'files' ? '' : detailState.npmUrl;
+    detailState.status === 'ready'
+      ? detailState.details.npmUrl
+      : detailState.status === 'loading' || detailState.status === 'error'
+        ? detailState.npmUrl
+        : '';
   const detailFiles = useMemo(() => {
     if (!detailPlugin || detailPlugin.type !== 'app') return [];
     if (detailPlugin.virtual) {
@@ -593,6 +618,24 @@ export default function PluginsScreen({colors}: {colors: Colors}) {
   }, [manualName, manualUrl, runTask]);
 
   /**
+   * git 插件安装：市场里没有的仓库，填地址（可选分支、目录名）后走市场那套 git 流程。
+   * 目标目录已存在时是 fetch + reset --hard，等于覆盖安装。
+   */
+  const submitGitInstall = useCallback(() => {
+    try {
+      const plugin = manualGitPlugin(gitUrl, gitName, gitBranch);
+      setGitOpen(false);
+      setGitUrl('');
+      setGitName('');
+      setGitBranch('');
+      setGitError('');
+      runTask(plugin, 'install');
+    } catch (caught) {
+      setGitError(caught instanceof Error ? caught.message : String(caught));
+    }
+  }, [gitBranch, gitName, gitUrl, runTask]);
+
+  /**
    * 本地文件安装：原生选文件后直接复制进 rootfs 的 app 插件目录，
    * 不经过容器的 curl，也不记归属（未知来源）。
    */
@@ -662,6 +705,10 @@ export default function PluginsScreen({colors}: {colors: Colors}) {
     setDetailPlugin(plugin);
     if (plugin.type === 'app') {
       setDetailState({status: 'files'});
+      return;
+    }
+    if (plugin.local && plugin.type === 'git') {
+      setDetailState({status: 'local'});
       return;
     }
     setDetailState({status: 'loading', npmUrl});
@@ -734,6 +781,26 @@ export default function PluginsScreen({colors}: {colors: Colors}) {
             <X color={colors.muted} size={14} />
           </Pressable>
         ) : null}
+      </View>
+
+      <View style={styles.actionRow}>
+        <Pressable
+          accessibilityRole='button'
+          onPress={onOpenDeps}
+          style={[styles.actionPill, {backgroundColor: colors.surface, borderColor: colors.border}]}>
+          <Package color={colors.accent} size={13} />
+          <Text style={[styles.actionPillText, {color: colors.text}]}>依赖管理</Text>
+        </Pressable>
+        <Pressable
+          accessibilityRole='button'
+          onPress={() => {
+            setGitError('');
+            setGitOpen(true);
+          }}
+          style={[styles.actionPill, {backgroundColor: colors.surface, borderColor: colors.border}]}>
+          <GitBranch color={colors.accent} size={13} />
+          <Text style={[styles.actionPillText, {color: colors.text}]}>Git 安装</Text>
+        </Pressable>
       </View>
 
       <View style={styles.filterBar}>
@@ -861,6 +928,11 @@ export default function PluginsScreen({colors}: {colors: Colors}) {
                           {plugin.virtual ? '目录' : typeMeta.label}
                         </Text>
                       </View>
+                      {plugin.local ? (
+                        <View style={[styles.tag, {backgroundColor: colors.orangeSoft}]}>
+                          <Text style={[styles.tagText, {color: colors.orange}]}>未知来源</Text>
+                        </View>
+                      ) : null}
                       {pluginCategoryIds(plugin).map(id => (
                         <View key={id} style={[styles.tag, {backgroundColor: colors.accentSoft}]}>
                           <Text style={[styles.tagText, {color: colors.accent}]}>{CATEGORY_META[id]?.label ?? id}</Text>
@@ -964,6 +1036,85 @@ export default function PluginsScreen({colors}: {colors: Colors}) {
               )}
             </ScrollView>
           </Animated.View>
+        </View>
+      </Modal>
+
+      <Modal
+        animationType='fade'
+        onRequestClose={() => setGitOpen(false)}
+        transparent
+        visible={gitOpen}>
+        <View style={styles.overlay}>
+          <Pressable onPress={() => setGitOpen(false)} style={styles.overlayBackdrop} />
+          <View ref={gitStep} style={[styles.detailStep, styles.detailStepCenter, {paddingBottom: manualKeyboardInset}]}>
+            <View style={[styles.manualSheet, {backgroundColor: colors.surface, borderColor: colors.border}]}>
+              <Text style={[styles.name, {color: colors.text}]}>从 Git 仓库安装插件</Text>
+              <Text style={[styles.filePickerHint, {color: colors.muted}]}>
+                {`填仓库地址，clone 到 plugins/<目录名>，装完按未知来源列出；目录已存在时走 fetch + reset --hard 覆盖安装，会丢弃仓库里的本地改动。`}
+              </Text>
+              <TextInput
+                autoCapitalize='none'
+                autoCorrect={false}
+                onChangeText={text => {
+                  setGitUrl(text);
+                  setGitError('');
+                }}
+                placeholder='https://github.com/xxx/karin-plugin-xxx'
+                placeholderTextColor={colors.muted}
+                style={[styles.manualInput, {borderColor: colors.border, color: colors.text}]}
+                value={gitUrl}
+              />
+              <TextInput
+                autoCapitalize='none'
+                autoCorrect={false}
+                onChangeText={setGitBranch}
+                placeholder='分支（可选，默认仓库默认分支）'
+                placeholderTextColor={colors.muted}
+                style={[styles.manualInput, {borderColor: colors.border, color: colors.text}]}
+                value={gitBranch}
+              />
+              <TextInput
+                autoCapitalize='none'
+                autoCorrect={false}
+                onChangeText={text => {
+                  setGitName(text);
+                  setGitError('');
+                }}
+                placeholder={`目录名（可选，默认 ${gitPluginNameFromUrl(gitUrl) || '仓库名'}）`}
+                placeholderTextColor={colors.muted}
+                style={[styles.manualInput, {borderColor: colors.border, color: colors.text}]}
+                value={gitName}
+              />
+              {gitError ? (
+                <Text style={[styles.manualNote, {color: colors.danger}]}>{gitError}</Text>
+              ) : gitTarget ? (
+                <Text style={[styles.manualNote, {color: !gitNameValid || gitConflict ? colors.danger : colors.muted}]}>
+                  {!gitNameValid
+                    ? `目录名不合法：${gitTarget}`
+                    : gitConflict
+                      ? `已有同名插件 ${gitTarget}，安装会覆盖`
+                      : `会装到 ${pluginInstallPath({name: gitTarget, type: 'git'})}`}
+                </Text>
+              ) : null}
+              <View style={styles.conflictActions}>
+                <Pressable onPress={() => setGitOpen(false)} style={[styles.conflictButton, {borderColor: colors.border}]}>
+                  <Text style={[styles.conflictButtonText, {color: colors.muted}]}>取消</Text>
+                </Pressable>
+                <Pressable
+                  disabled={!gitUrl.trim() || !gitNameValid}
+                  onPress={submitGitInstall}
+                  style={[
+                    styles.conflictButton,
+                    {backgroundColor: colors.accent, borderColor: colors.accent},
+                    (!gitUrl.trim() || !gitNameValid) && styles.disabledAction,
+                  ]}>
+                  <Text style={[styles.conflictButtonText, styles.conflictPrimaryText]}>
+                    {gitConflict ? '覆盖安装' : '安装'}
+                  </Text>
+                </Pressable>
+              </View>
+            </View>
+          </View>
         </View>
       </Modal>
 
@@ -1106,6 +1257,13 @@ export default function PluginsScreen({colors}: {colors: Colors}) {
                 <View style={styles.detailStateBox}>
                   <ActivityIndicator color={colors.accent} size='small' />
                   <Text style={[styles.detailStateText, {color: colors.muted}]}>正在获取 README.md…</Text>
+                </View>
+              ) : detailState.status === 'local' ? (
+                <View style={styles.detailStateBox}>
+                  <Text style={[styles.detailStateText, {color: colors.text}]}>本地插件（未知来源）</Text>
+                  <Text style={[styles.appHint, {color: colors.muted}]}>
+                    {`插件市场里没有这个条目，它是从容器里的 ${detailPlugin ? pluginInstallPath(detailPlugin) : ''} 探测到的。git 插件没有 npm 上的 README 可看，可以直接卸载，卸载在依赖管理里也能做。`}
+                  </Text>
                 </View>
               ) : detailState.status === 'error' ? (
                 <View style={styles.detailStateBox}>
@@ -1372,6 +1530,10 @@ const styles = StyleSheet.create({
   summaryRow: {height: 38, paddingHorizontal: 14, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between'},
   summary: {fontSize: 11, fontWeight: '600'},
   refreshButton: {width: 30, height: 30, borderRadius: 15, borderWidth: 1, alignItems: 'center', justifyContent: 'center'},
+  /** 依赖管理 / Git 安装入口 */
+  actionRow: {flexDirection: 'row', gap: 8, paddingHorizontal: 12, paddingBottom: 8},
+  actionPill: {flexDirection: 'row', alignItems: 'center', gap: 5, height: 32, borderWidth: 1, borderRadius: 8, paddingHorizontal: 10},
+  actionPillText: {fontSize: 11, fontWeight: '700'},
   searchRow: {
     minHeight: 36,
     marginHorizontal: 12,

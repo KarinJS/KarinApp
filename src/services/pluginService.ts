@@ -35,6 +35,8 @@ export type Plugin = {
   installedFiles?: string[];
   /** 虚拟条目：karin-plugin-example 目录本身，只能卸载，不能安装 */
   virtual?: boolean;
+  /** 本地探测到的条目：容器里装了，但插件市场列表里没有（未知来源） */
+  local?: boolean;
 };
 
 export type PluginDetails = {
@@ -74,6 +76,19 @@ export const npmPackageUrl = (name: string) => `https://www.npmjs.com/package/${
 
 const KARIN_DIR = '/root/karin';
 const PLUGIN_TYPES = new Set<PluginType>(['npm', 'git', 'app']);
+
+/**
+ * npm 上 Karin 插件的命名约定：
+ * karin-plugin-xxx（标准）、@karinjs/plugin-xxx（官方）、@scope/karin-plugin-xxx（组织包）。
+ * 本地探测和依赖管理都靠它判断一个包算不算插件。
+ */
+const PLUGIN_PACKAGE_RES = [/^karin-plugin-[\w.-]+$/i, /^@[^/]+\/karin-plugin-[\w.-]+$/i, /^@karinjs\/plugin-[\w.-]+$/i];
+
+/** 包名是不是 Karin 插件 */
+export const isPluginPackageName = (name: string) => PLUGIN_PACKAGE_RES.some(pattern => pattern.test(name));
+
+/** 依赖名（可带 @version 后缀）：pkg、@scope/pkg、pkg@1.0.0 都算合法 */
+const DEPENDENCY_NAME_RE = /^(?:@[\w.-]+\/)?[\w.-]+(?:@[\w.^~><=*|-]+)?$/;
 
 /**
  * Karin 约定：所有 app 类型插件的 .js 文件都放在这个目录，Karin 启动时按文件加载。
@@ -162,7 +177,17 @@ const detailCache = new Map<string, PluginDetails>();
 const PLUGIN_LIST_URL = 'https://registry.npmjs.org/@karinjs/plugins-list/latest';
 async function fetchPlugins(force = false): Promise<Plugin[]> {
   if (cache && !force) return cache;
-  const raw = await fetch(PLUGIN_LIST_URL).then(response => { if (!response.ok) throw new Error(`插件列表请求失败 (${response.status})`); return response.json(); });
+  let raw: any;
+  try {
+    raw = await fetch(PLUGIN_LIST_URL).then(response => {
+      if (!response.ok) throw new Error(`插件列表请求失败 (${response.status})`);
+      return response.json();
+    });
+  } catch (error) {
+    /** 刷新失败时退回上次拿到的市场列表：至少本地装的插件还能看见 */
+    if (cache) return cache;
+    throw error;
+  }
   const source = Array.isArray(raw) ? raw : raw.plugins ?? raw.list ?? raw.data ?? [];
   if (!Array.isArray(source)) throw new Error('插件列表格式错误');
   cache = source
@@ -229,6 +254,42 @@ export const manualAppPlugin = (url: string, fileName = '') => {
     renames: target === derived ? undefined : {[derived || '*']: target},
   };
 };
+
+/** 从 git 地址推目录名：https://github.com/a/karin-plugin-x.git → karin-plugin-x */
+export const gitPluginNameFromUrl = (url: string) => {
+  const trimmed = url.trim().replace(/\/+$/, '');
+  const tail = trimmed.split(/[/:]/).pop() ?? '';
+  return tail.replace(/\.git$/i, '').trim();
+};
+
+/**
+ * 手动安装 git 插件：市场列表里没有的仓库，用户自己填地址（可选分支、目录名）。
+ * 安装 / 更新 / 卸载都复用市场那套 git 流程，这里只现造一个 git 条目。
+ */
+export const manualGitPlugin = (url: string, name = '', branch = '') => {
+  const trimmed = url.trim();
+  if (!/^(?:https?:\/\/|git:\/\/|ssh:\/\/|git@)/i.test(trimmed)) {
+    throw new Error('请填写 git 仓库地址（https://… 或 git@…）');
+  }
+  const wanted = (name.trim() || gitPluginNameFromUrl(trimmed)).trim();
+  if (!wanted) throw new Error('请填写插件目录名，例如 karin-plugin-xxx');
+  /** karin-plugin-example 是 app 插件共享目录，git 覆盖安装会 rm -rf 掉里面的文件 */
+  if (wanted === APP_PLUGIN_DIR) throw new Error(`${APP_PLUGIN_DIR} 是 APP 插件目录，不能作为 git 插件目录名`);
+  const plugin: Plugin = {
+    name: wanted,
+    type: 'git',
+    description: '手动安装的 Git 插件',
+    homepage: githubUrlFrom(trimmed),
+    repo: [{type: 'git', url: trimmed, branch: branch.trim() || undefined}],
+  };
+  /** 复用市场那套名称校验，名字不合法直接抛错 */
+  pluginPath(plugin);
+  return plugin;
+};
+
+/** 插件在容器里的安装位置（详情页、依赖管理里展示用） */
+export const pluginInstallPath = (plugin: Plugin) =>
+  plugin.type === 'npm' ? `${KARIN_DIR}/node_modules/${plugin.name}` : pluginPath(plugin);
 
 /** app 插件的文件列表（过滤掉没有直链的项） */
 export const appPluginFiles = (plugin: Plugin) =>
@@ -337,17 +398,86 @@ const listExistingPlugins = async (probes: {name: string; command: string}[]) =>
   }
 };
 
+type LocalPlugin = {
+  name: string;
+  type: 'npm' | 'git';
+  /** git 插件的来源仓库（从 .git 配置里读，读不到就空） */
+  remote?: string;
+};
+
+/**
+ * 一次扫描容器里已装的插件：npm 的看 node_modules（三种命名约定），git 的看 plugins/ 下的目录。
+ * 不是从插件市场装进来的也照样能探到，这样本地装的插件在列表里看得见、也能卸载。
+ */
+const scanLocalPlugins = async (): Promise<LocalPlugin[]> => {
+  const nodeModules = `${KARIN_DIR}/node_modules`;
+  const pluginsDir = `${KARIN_DIR}/plugins`;
+  const listGitDirs = [
+    `for d in ${pluginsDir}/*/ ${pluginsDir}/@*/*/; do`,
+    `test -d "$d" || continue`,
+    `r=''`,
+    `if command -v git >/dev/null 2>&1; then r=$(git -C "$d" config --get remote.origin.url 2>/dev/null); fi`,
+    `printf '%s\t%s\n' "$d" "$r"`,
+    `done`,
+  ].join('; ');
+  const command = [
+    `echo '@npm'`,
+    `ls -d ${nodeModules}/karin-plugin-* ${nodeModules}/@*/karin-plugin-* ${nodeModules}/@karinjs/plugin-* 2>/dev/null`,
+    `echo '@git'`,
+    listGitDirs,
+    'true',
+  ].join('; ');
+
+  let output = '';
+  try {
+    output = await executeAndCollect(command);
+  } catch {
+    return [];
+  }
+
+  const npmPrefix = `${nodeModules}/`;
+  const pluginsPrefix = `${pluginsDir}/`;
+  const found = new Map<string, LocalPlugin>();
+  let section = '';
+  output.split('\n').forEach(raw => {
+    const line = raw.trim();
+    if (line === '@npm' || line === '@git') {
+      section = line === '@npm' ? 'npm' : 'git';
+      return;
+    }
+    if (!line) return;
+    if (section === 'npm' && line.startsWith(npmPrefix)) {
+      const name = line.slice(npmPrefix.length).replace(/\/+$/, '');
+      if (name) found.set(name, {name, type: 'npm'});
+      return;
+    }
+    if (section === 'git') {
+      const [rawDir, remote = ''] = line.split('\t');
+      const path = (rawDir ?? '').trim();
+      if (!path.startsWith(pluginsPrefix)) return;
+      const name = path.slice(pluginsPrefix.length).replace(/\/+$/, '').trim();
+      /** app 插件共用目录不是插件条目，市场外的目录都算本地 git 插件 */
+      if (name && name !== APP_PLUGIN_DIR) found.set(name, {name, type: 'git', remote: remote.trim() || undefined});
+    }
+  });
+  return [...found.values()];
+};
+
 /**
  * 拉取插件市场 + 容器内的安装状态。
  * app 插件按哈希归属判断，所以随便改个同名的文件不会被误判成该插件。
+ * 本地探测（node_modules + plugins 目录）覆盖市场的探测结果，市场里没有的本地插件补成未知来源条目。
  */
 export async function loadPluginSnapshot(force = false): Promise<PluginSnapshot> {
-  const [market, dirFiles, manifest] = await Promise.all([
+  const [market, dirFiles, manifest, local] = await Promise.all([
     fetchPlugins(force),
     listAppPluginDir(),
     readAppManifest(),
+    scanLocalPlugins(),
   ]);
   const stored = await listExistingPlugins(market.filter(plugin => plugin.type !== 'app').map(pluginProbe));
+  const localByName = new Map(local.map(item => [item.name, item]));
+  const marketNames = new Set(market.map(plugin => plugin.name));
   const filesByHash = new Map<string, DirFile[]>();
   dirFiles.forEach(file => {
     const bucket = filesByHash.get(file.hash) ?? [];
@@ -382,14 +512,31 @@ export async function loadPluginSnapshot(force = false): Promise<PluginSnapshot>
     await writeAppManifest(nextManifest);
   }
 
+  const plugins: Plugin[] = market.map(plugin => {
+    if (plugin.type === 'app') {
+      const installedFiles = matches.get(plugin.name) ?? [];
+      return {...plugin, installed: installedFiles.length > 0, installedFiles};
+    }
+    /** 本地探测到的（含 pnpm 装的）优先：市场那条命令探不到时以本地目录为准 */
+    return {...plugin, installed: stored.has(plugin.name) || localByName.has(plugin.name), installedFiles: undefined};
+  });
+
+  local.forEach(item => {
+    if (marketNames.has(item.name)) return;
+    const githubUrl = item.remote ? githubUrlFrom(item.remote) : undefined;
+    plugins.push({
+      name: item.name,
+      type: item.type,
+      description: '本地安装（插件市场里没有这个条目）',
+      installed: true,
+      local: true,
+      homepage: githubUrl,
+      repo: item.remote ? [{type: 'git', url: item.remote}] : undefined,
+    });
+  });
+
   return {
-    plugins: market.map(plugin => {
-      if (plugin.type === 'app') {
-        const installedFiles = matches.get(plugin.name) ?? [];
-        return {...plugin, installed: installedFiles.length > 0, installedFiles};
-      }
-      return {...plugin, installed: stored.has(plugin.name), installedFiles: undefined};
-    }),
+    plugins,
     appDirFiles: dirFiles.map(file => ({...file, owner: owners.get(file.name)})),
   };
 }
@@ -432,10 +579,11 @@ export async function fetchPluginDetails(plugin: Plugin): Promise<PluginDetails>
   return details;
 }
 
-const npmInstallCommand = (plugin: Plugin) => {
-  const packageName = shellQuote(plugin.name);
-  return `cd ${KARIN_DIR} && if test -f pnpm-workspace.yaml; then pnpm -w i ${packageName}; else pnpm i ${packageName}; fi`;
-};
+/** Karin 项目里的 pnpm 命令：有 workspace 就带上 -w，否则直接跑 */
+const pnpmCommand = (args: string) =>
+  `cd ${KARIN_DIR} && if test -f pnpm-workspace.yaml; then pnpm -w ${args}; else pnpm ${args}; fi`;
+
+const npmInstallCommand = (plugin: Plugin) => pnpmCommand(`i ${shellQuote(plugin.name)}`);
 
 const gitInstallCommand = (plugin: Plugin) => {
   const repository = plugin.repo?.find(item => item.type !== 'npm' && item.url);
@@ -520,7 +668,89 @@ export const removePlugin = (
     plugin.type === 'app'
       ? appRemoveCommand(options.appFiles ?? plugin.installedFiles ?? [])
       : plugin.type === 'npm'
-        ? `cd ${KARIN_DIR} && if test -f pnpm-workspace.yaml; then pnpm -w remove ${shellQuote(plugin.name)}; else pnpm remove ${shellQuote(plugin.name)}; fi`
+        ? pnpmCommand(`remove ${shellQuote(plugin.name)}`)
         : `rm -rf -- ${shellQuote(pluginPath(plugin))}`;
   return executeStreaming(command, onLog, 5 * 60 * 1000, signal);
+};
+
+/** Karin 运行本体：依赖管理里不给卸载，避免把环境弄坏 */
+const KARIN_CORE_PACKAGES = ['node-karin', 'karin', '@karinjs/node-karin'];
+
+export const isKarinCorePackage = (name: string) => KARIN_CORE_PACKAGES.includes(name);
+
+export type KarinDependency = {
+  name: string;
+  /** package.json 里声明的版本范围 */
+  spec: string;
+  /** devDependencies 里的依赖 */
+  dev?: boolean;
+  /** 是不是按 Karin 插件命名（决定它会不会出现在插件列表里） */
+  plugin: boolean;
+  /** Karin 运行本体 */
+  core: boolean;
+};
+
+const KARIN_PACKAGE_JSON = `${KARIN_DIR}/package.json`;
+
+/** 列出 /root/karin/package.json 里声明的依赖（Karin 本体和插件都装在这个项目里） */
+export const listKarinDependencies = async (): Promise<KarinDependency[]> => {
+  const output = await executeAndCollect(`cat ${shellQuote(KARIN_PACKAGE_JSON)} 2>/dev/null || true`);
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(output.trim() || '{}');
+  } catch {
+    throw new Error('package.json 解析失败，可能不是合法的 JSON');
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return [];
+  const source = parsed as Record<string, unknown>;
+  const merged = new Map<string, KarinDependency>();
+  const collect = (field: string, dev: boolean) => {
+    const entries = source[field];
+    if (!entries || typeof entries !== 'object' || Array.isArray(entries)) return;
+    Object.entries(entries as Record<string, unknown>).forEach(([name, spec]) => {
+      if (dev && merged.has(name)) return;
+      merged.set(name, {
+        name,
+        spec: typeof spec === 'string' ? spec : '',
+        dev: dev || undefined,
+        plugin: isPluginPackageName(name),
+        core: isKarinCorePackage(name),
+      });
+    });
+  };
+  collect('dependencies', false);
+  collect('devDependencies', true);
+  return [...merged.values()].sort((left, right) => left.name.localeCompare(right.name));
+};
+
+/** 安装输入（空格 / 逗号分隔，支持 name@version）→ 校验后的参数列表 */
+export const parseDependencyInput = (input: string) => {
+  const items = input
+    .split(/[\s,，]+/)
+    .map(item => item.trim())
+    .filter(Boolean);
+  items.forEach(item => {
+    if (!DEPENDENCY_NAME_RE.test(item)) throw new Error(`依赖名不合法：${item}`);
+  });
+  return items;
+};
+
+/** 安装依赖（一次可以多个）：pnpm i a b@1.0.0 */
+export const installKarinDependencies = async (
+  names: string[],
+  onLog: (line: string) => void,
+  signal?: AbortSignal,
+) => {
+  if (!names.length) throw new Error('请填写要安装的依赖');
+  return executeStreaming(pnpmCommand(`i ${names.map(shellQuote).join(' ')}`), onLog, 5 * 60 * 1000, signal);
+};
+
+/** 卸载依赖：pnpm remove <name>；Karin 本体不给删 */
+export const removeKarinDependency = async (
+  name: string,
+  onLog: (line: string) => void,
+  signal?: AbortSignal,
+) => {
+  if (isKarinCorePackage(name)) throw new Error(`${name} 是 Karin 运行本体，不能在依赖管理里卸载`);
+  return executeStreaming(pnpmCommand(`remove ${shellQuote(name)}`), onLog, 5 * 60 * 1000, signal);
 };

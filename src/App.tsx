@@ -14,6 +14,7 @@ import {useToast} from './hooks/useToast';
 import DashboardScreen from './screens/DashboardScreen';
 import FileManagerScreen from './screens/FileManagerScreen';
 import PluginsScreen from './screens/PluginsScreen';
+import DependencyScreen from './screens/DependencyScreen';
 import SettingsScreen from './screens/SettingsScreen';
 import TerminalScreen from './screens/TerminalScreen';
 import {karinService} from './services/karinService';
@@ -59,6 +60,7 @@ export default function App() {
   const [karinBusy, setKarinBusy] = useState(false);
   const [filesOpen, setFilesOpen] = useState(false);
   const [terminalOpen, setTerminalOpen] = useState(false);
+  const [depsOpen, setDepsOpen] = useState(false);
   const [resetConfirm, setResetConfirm] = useState<'project' | 'container' | null>(null);
   const [resetProgress, setResetProgress] = useState<StartupProgress | null>(null);
   const [resetError, setResetError] = useState('');
@@ -312,8 +314,10 @@ export default function App() {
                   onResetProject={() => setResetConfirm('project')}
                   onResetContainer={() => setResetConfirm('container')}
                 />
+              ) : depsOpen ? (
+                <DependencyScreen colors={colors} onBack={() => setDepsOpen(false)} />
               ) : (
-                <PluginsScreen colors={colors} />
+                <PluginsScreen colors={colors} onOpenDeps={() => setDepsOpen(true)} />
               )}
             </View>
 
@@ -337,7 +341,7 @@ export default function App() {
               </Pressable>
             ) : null}
 
-            <BottomNav activeTab={activeTab} colors={colors} onSelect={tab => { setFilesOpen(false); setTerminalOpen(false); setActiveTab(tab); }} />
+            <BottomNav activeTab={activeTab} colors={colors} onSelect={tab => { setFilesOpen(false); setTerminalOpen(false); setDepsOpen(false); setActiveTab(tab); }} />
           </View>
         )}
 
