@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.2.0](https://github.com/KarinJS/KarinApp/compare/v1.1.3...v1.2.0) (2026-09-12)
+
+
+### Features
+
+* 插件页面新增搜索功能 ([850ee17](https://github.com/KarinJS/KarinApp/commit/850ee175999fdd5871d2fcc400e2f39f98383c1b))
+
+
+### Bug Fixes
+
+* 优化新版本更新日志 ([87c0d21](https://github.com/KarinJS/KarinApp/commit/87c0d21ca055dc9b0ce1fca6522b98f66b459cbf))
+* 优化检查更新逻辑 ([dc83a42](https://github.com/KarinJS/KarinApp/commit/dc83a42beab4c51d38bf794a42111ba5467b3542))
+* 控制台中，系统架构改为安卓版本 ([a5626ce](https://github.com/KarinJS/KarinApp/commit/a5626cee419e534eaf5f46b96c659556c5c15b88))
+
 ## [1.1.3](https://github.com/KarinJS/KarinApp/compare/v1.1.2...v1.1.3) (2026-09-12)
 
 
