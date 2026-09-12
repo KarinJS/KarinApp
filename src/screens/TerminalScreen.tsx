@@ -2,6 +2,7 @@ import React, {useEffect, useRef, useState} from 'react';
 import {
   BackHandler,
   FlatList,
+  LayoutChangeEvent,
   NativeScrollEvent,
   NativeSyntheticEvent,
   Pressable,
@@ -46,6 +47,26 @@ export default function TerminalScreen({colors, dark, karinRunning, onBack}: Pro
   const [input, setInput] = useState('');
   const [follow, setFollow] = useState(true);
   const list = useRef<FlatList<KarinLogLine>>(null);
+  // 贴底偏移量自己算：FlatList 的 scrollToEnd 按各行已量出的高度估算末尾位置，长日志在行内
+  // 换行撑高后估算值偏小，只能停在那一行的第一行文字上，所以用原生内容高度减可视高度。
+  const contentHeight = useRef(0);
+  const viewportHeight = useRef(0);
+  const followRef = useRef(true);
+  const dragging = useRef(false);
+
+  const setFollowValue = (next: boolean) => {
+    if (followRef.current === next) return;
+    followRef.current = next;
+    setFollow(next);
+  };
+
+  const stickToBottom = (animated: boolean) => {
+    if (viewportHeight.current <= 0) return;
+    list.current?.scrollToOffset({
+      offset: Math.max(0, contentHeight.current - viewportHeight.current),
+      animated,
+    });
+  };
 
   useEffect(() => subscribeKarinLog(() => setLines([...getKarinLogLines()])), []);
 
@@ -58,21 +79,45 @@ export default function TerminalScreen({colors, dark, karinRunning, onBack}: Pro
   }, [onBack]);
 
   // 内容变长时保持贴底；用户上滑查看历史则暂停跟随，不打断阅读。
-  const handleContentSizeChange = () => {
-    if (follow) list.current?.scrollToEnd({animated: false});
+  const handleContentSizeChange = (_width: number, height: number) => {
+    contentHeight.current = height;
+    if (followRef.current) stickToBottom(false);
+  };
+
+  const handleLayout = (event: LayoutChangeEvent) => {
+    viewportHeight.current = event.nativeEvent.layout.height;
+    if (followRef.current) stickToBottom(false);
+  };
+
+  /** 只有用户自己的手势才会改变跟随状态，程序化贴底触发的 onScroll 不算数。 */
+  const followFromGesture = (event: NativeSyntheticEvent<NativeScrollEvent>) => {
+    const {contentOffset, contentSize, layoutMeasurement} = event.nativeEvent;
+    const distance = contentSize.height - contentOffset.y - layoutMeasurement.height;
+    setFollowValue(distance < FOLLOW_THRESHOLD_PX);
   };
 
   const handleScroll = (event: NativeSyntheticEvent<NativeScrollEvent>) => {
-    const {contentOffset, contentSize, layoutMeasurement} = event.nativeEvent;
-    const distance = contentSize.height - contentOffset.y - layoutMeasurement.height;
-    setFollow(distance < FOLLOW_THRESHOLD_PX);
+    const {contentSize, layoutMeasurement} = event.nativeEvent;
+    contentHeight.current = contentSize.height;
+    viewportHeight.current = layoutMeasurement.height;
+    if (dragging.current) followFromGesture(event);
+  };
+
+  const handleScrollBeginDrag = (event: NativeSyntheticEvent<NativeScrollEvent>) => {
+    dragging.current = true;
+    followFromGesture(event);
+  };
+
+  const handleScrollSettled = (event: NativeSyntheticEvent<NativeScrollEvent>) => {
+    dragging.current = false;
+    followFromGesture(event);
   };
 
   const send = () => {
     const text = input.trim();
     if (!text || !karinRunning) return;
     setInput('');
-    setFollow(true);
+    setFollowValue(true);
     appendKarinLog(`$ ${text}`, 'input');
     karinService
       .sendInput(text)
@@ -82,8 +127,8 @@ export default function TerminalScreen({colors, dark, karinRunning, onBack}: Pro
   };
 
   const backToBottom = () => {
-    setFollow(true);
-    list.current?.scrollToEnd({animated: true});
+    setFollowValue(true);
+    stickToBottom(true);
   };
 
   return (
@@ -119,7 +164,11 @@ export default function TerminalScreen({colors, dark, karinRunning, onBack}: Pro
           </Text>
         )}
         onContentSizeChange={handleContentSizeChange}
+        onLayout={handleLayout}
         onScroll={handleScroll}
+        onScrollBeginDrag={handleScrollBeginDrag}
+        onScrollEndDrag={handleScrollSettled}
+        onMomentumScrollEnd={handleScrollSettled}
         scrollEventThrottle={16}
         ListEmptyComponent={
           <View style={styles.empty}>
