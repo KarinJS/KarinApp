@@ -3,6 +3,8 @@ package com.karinjs.karin
 import android.content.Context
 import java.io.File
 import java.nio.file.Files
+import java.nio.file.Paths
+import java.util.TimeZone
 
 /**
  * 准备 proot 运行环境（拷贝依赖 so、安装容器内 karin-ipc 守护进程），
@@ -29,6 +31,7 @@ internal class ProotRuntime(private val context: Context) {
     if (!prootFile().isFile) throw IllegalStateException("安装包中缺少 proot 主程序")
     if (!loaderFile().isFile) throw IllegalStateException("安装包中缺少 proot loader")
     installDaemon(root)
+    syncTimeZone(root)
   }
 
   /** 在容器内启动一个进程（mergeError=true 时 stderr 合并进 stdout，用于自检）。 */
@@ -50,6 +53,7 @@ internal class ProotRuntime(private val context: Context) {
         put("TMPDIR", "/tmp")
         put("LANG", "C.UTF-8")
         put("DEBIAN_FRONTEND", "noninteractive")
+        put("TZ", deviceTimeZone(root))
       }
     }.start()
   }
@@ -76,6 +80,37 @@ internal class ProotRuntime(private val context: Context) {
       target.parentFile?.mkdirs()
       source.copyTo(target, overwrite = true)
       chmod(target, 0x1ed) // 0755
+    }
+  }
+
+  /**
+   * 把设备时区写进容器（/etc/localtime 软链 + /etc/timezone），
+   * 让不读 TZ 环境变量的程序（如部分读 /etc/timezone 的库）也能拿到本地时间。
+   * 偏移写法的时区没有对应 zone 文件，此时只靠 TZ 环境变量。失败不阻塞启动。
+   */
+  private fun syncTimeZone(root: File) {
+    runCatching {
+      val id = TimeZone.getDefault().id
+      if (!File(root, "usr/share/zoneinfo/$id").isFile) return@runCatching
+      val localtime = File(root, "etc/localtime")
+      Files.deleteIfExists(localtime.toPath())
+      Files.createSymbolicLink(localtime.toPath(), Paths.get("/usr/share/zoneinfo/$id"))
+      File(root, "etc/timezone").writeText("$id\n")
+    }
+  }
+
+  /** 设备时区名；rootfs 没有对应 zoneinfo（如手动设 GMT+08:00 偏移的设备）时退回 POSIX 偏移写法。 */
+  private fun deviceTimeZone(root: File): String {
+    val zone = TimeZone.getDefault()
+    if (File(root, "usr/share/zoneinfo/${zone.id}").isFile) return zone.id
+    val minutes = zone.rawOffset / 60_000
+    if (minutes == 0) return "UTC"
+    // POSIX 时区偏移符号与 UTC 相反：GMT-8 表示 UTC+8
+    val sign = if (minutes > 0) '-' else '+'
+    val absolute = Math.abs(minutes)
+    return buildString {
+      append("GMT").append(sign).append(absolute / 60)
+      if (absolute % 60 != 0) append(':').append("%02d".format(absolute % 60))
     }
   }
 
