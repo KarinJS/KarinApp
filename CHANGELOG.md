@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.2.3](https://github.com/KarinJS/KarinApp/compare/v1.2.2...v1.2.3) (2026-09-13)
+
+
+### Bug Fixes
+
+* 支持shizuku ([0eafc9f](https://github.com/KarinJS/KarinApp/commit/0eafc9ff05667854d2e509226a0d97f2cbf69e81))
+
 ## [1.2.2](https://github.com/KarinJS/KarinApp/compare/v1.2.1...v1.2.2) (2026-09-13)
 
 
