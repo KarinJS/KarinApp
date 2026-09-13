@@ -2,6 +2,7 @@ import React, {useCallback, useEffect, useState} from 'react';
 import {ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, TextInput, View} from 'react-native';
 import {Check, ChevronRight} from 'lucide-react-native';
 import AboutScreen from './AboutScreen';
+import KeepAliveScreen from './KeepAliveScreen';
 import {Colors} from '../theme/colors';
 import {executeAndCollect} from '../services/prootController';
 import {isValidGithubProxy, loadAppSettings, normalizeGithubProxy, saveGithubProxy} from '../services/appSettings';
@@ -34,6 +35,7 @@ export default function SettingsScreen({colors, version, onOpen, onResetProject,
   const [proxySaving, setProxySaving] = useState(false);
   const [proxyError, setProxyError] = useState('');
   const [aboutOpen, setAboutOpen] = useState(false);
+  const [keepAliveOpen, setKeepAliveOpen] = useState(false);
 
   const readRegistry = useCallback(() => {
     executeAndCollect('npm config get registry')
@@ -90,6 +92,10 @@ export default function SettingsScreen({colors, version, onOpen, onResetProject,
     return <AboutScreen colors={colors} karinVersion={version} onBack={() => setAboutOpen(false)} />;
   }
 
+  if (keepAliveOpen) {
+    return <KeepAliveScreen colors={colors} onBack={() => setKeepAliveOpen(false)} />;
+  }
+
   return (
     <ScrollView contentContainerStyle={styles.content}>
       <Text style={[styles.intro, {color: colors.muted}]}>统一管理容器运行环境与 Karin 版本</Text>
@@ -104,6 +110,13 @@ export default function SettingsScreen({colors, version, onOpen, onResetProject,
       </View>
 
       <View style={[styles.list, styles.listGap, {backgroundColor: colors.surface, borderColor: colors.border}]}>
+        <Pressable onPress={() => setKeepAliveOpen(true)} style={[styles.row, styles.rowDivider, {borderBottomColor: colors.border}]}>
+          <View style={styles.copy}>
+            <Text style={[styles.label, {color: colors.text}]}>保活设置</Text>
+            <Text style={[styles.value, {color: colors.muted}]}>通知、电池优化白名单、ADB / Root 保活</Text>
+          </View>
+          <ChevronRight size={18} color={colors.muted} />
+        </Pressable>
         <Pressable onPress={onOpen} style={styles.row}>
           <View style={styles.copy}>
             <Text style={[styles.label, {color: colors.text}]}>Karin 版本</Text>

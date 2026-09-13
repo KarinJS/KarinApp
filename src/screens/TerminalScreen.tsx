@@ -5,9 +5,11 @@ import {
   FlatList,
   Keyboard,
   LayoutChangeEvent,
+  Modal,
   NativeScrollEvent,
   NativeSyntheticEvent,
   Pressable,
+  ScrollView,
   StyleSheet,
   Text,
   TextInput,
@@ -16,12 +18,16 @@ import {
 import {useSafeAreaInsets} from 'react-native-safe-area-context';
 import {
   ArrowDownToLine,
+  CalendarDays,
+  Check,
   CheckCheck,
+  ChevronDown,
   ChevronLeft,
   Copy,
   CornerDownLeft,
   Eraser,
   ListChecks,
+  RotateCw,
   X,
 } from 'lucide-react-native';
 import {karinService} from '../services/karinService';
@@ -34,6 +40,13 @@ import {
   KarinLogStream,
   subscribeKarinLog,
 } from '../services/karinLogService';
+import {
+  formatLogFileLine,
+  listLogDates,
+  readLogLines,
+  startLogTail,
+  todayLogDate,
+} from '../services/karinLogFileService';
 import Toast from '../components/Toast';
 import {useToast} from '../hooks/useToast';
 import {Colors} from '../theme/colors';
@@ -46,8 +59,15 @@ type Props = {
   onBack: () => void;
 };
 
+/** 日志来源：「控制台」是 Karin 进程的 stdout 流（默认），「历史日志」读容器内 log4js 落盘文件（当天实时 + 历史日期）。 */
+type LogMode = 'file' | 'console';
+
 /** 距底部小于该距离就视为“贴底”，重新跟随最新日志。 */
 const FOLLOW_THRESHOLD_PX = 28;
+/** 文件日志在内存里保留的最大行数，与环形缓冲一致。 */
+const FILE_MAX_LINES = 2000;
+/** 文件日志高频追加的合并通知间隔。 */
+const FILE_FLUSH_INTERVAL_MS = 120;
 
 function lineColor(stream: KarinLogStream, colors: Colors): string {
   if (stream === 'stderr') return colors.danger;
@@ -56,13 +76,33 @@ function lineColor(stream: KarinLogStream, colors: Colors): string {
   return colors.text;
 }
 
+/** 日期选择列表里的显示名：今天 / 昨天 / 完整日期。 */
+function dateLabel(date: string): string {
+  if (date === todayLogDate()) return '今天';
+  const yesterday = new Date();
+  yesterday.setDate(yesterday.getDate() - 1);
+  const month = `${yesterday.getMonth() + 1}`.padStart(2, '0');
+  const day = `${yesterday.getDate()}`.padStart(2, '0');
+  if (date === `${yesterday.getFullYear()}-${month}-${day}`) return '昨天';
+  return date;
+}
+
 /**
- * Karin 运行日志：实时滚动，保留 log4js 的 ANSI 颜色。
+ * Karin 运行日志：「日志」模式读容器内 log4js 文件（当天 tail -F 实时跟随，可切历史日期），
+ * 「控制台」模式是 Karin 常驻进程的 stdout 流（带 ANSI 颜色和控制台输入）。
  * 每行是独立的原生文本视图，系统选区跨不过行边界，所以不走系统选词：长按直接整行选中，
  * 再按 GitHub 手机版那样点选 / 长按选区间，凑多行一起复制。
  */
 export default function TerminalScreen({colors, dark, karinRunning, onBack}: Props) {
-  const [lines, setLines] = useState<KarinLogLine[]>(() => getKarinLogLines());
+  const [consoleLines, setConsoleLines] = useState<KarinLogLine[]>(() => getKarinLogLines());
+  const [mode, setMode] = useState<LogMode>('console');
+  const [date, setDate] = useState(() => todayLogDate());
+  const [dates, setDates] = useState<string[]>([]);
+  const [fileLines, setFileLines] = useState<KarinLogLine[]>([]);
+  const [fileLoading, setFileLoading] = useState(false);
+  const [dateSheetOpen, setDateSheetOpen] = useState(false);
+  /** 点刷新重拉当前日期（含实时跟随重启）。 */
+  const [reloadKey, setReloadKey] = useState(0);
   const [input, setInput] = useState('');
   const [follow, setFollow] = useState(true);
   const [selecting, setSelecting] = useState(false);
@@ -73,6 +113,7 @@ export default function TerminalScreen({colors, dark, karinRunning, onBack}: Pro
   const [keyboardInset, setKeyboardInset] = useState(0);
   const root = useRef<React.ComponentRef<typeof View>>(null);
   const list = useRef<FlatList<KarinLogLine>>(null);
+  const nextFileId = useRef(1);
   // 贴底偏移量自己算：FlatList 的 scrollToEnd 按各行已量出的高度估算末尾位置，长日志在行内
   // 换行撑高后估算值偏小，只能停在那一行的第一行文字上，所以用原生内容高度减可视高度。
   const contentHeight = useRef(0);
@@ -83,6 +124,8 @@ export default function TerminalScreen({colors, dark, karinRunning, onBack}: Pro
   const anchorId = useRef<number | null>(null);
   /** 进入多选前是否在贴底，退出时按它决定要不要恢复跟随。 */
   const resumeFollow = useRef(false);
+
+  const lines = mode === 'console' ? consoleLines : fileLines;
 
   const setFollowValue = useCallback((next: boolean) => {
     if (followRef.current === next) return;
@@ -112,7 +155,74 @@ export default function TerminalScreen({colors, dark, karinRunning, onBack}: Pro
     backToBottom();
   }, [backToBottom]);
 
-  useEffect(() => subscribeKarinLog(() => setLines([...getKarinLogLines()])), []);
+  useEffect(() => subscribeKarinLog(() => setConsoleLines([...getKarinLogLines()])), []);
+
+  // 文件日志数据源：当天用 tail -F 实时跟随，历史日期一次性读取。
+  useEffect(() => {
+    if (mode !== 'file') return;
+    setFileLines([]);
+    setFollowValue(true);
+    const today = todayLogDate();
+    if (date !== today) {
+      let cancelled = false;
+      setFileLoading(true);
+      readLogLines(date)
+        .then(rawLines => {
+          if (cancelled) return;
+          const formatted = rawLines
+            .map(line => formatLogFileLine(line, nextFileId.current++))
+            .filter((line): line is KarinLogLine => line !== null);
+          setFileLines(formatted);
+        })
+        .catch(() => {
+          // 文件不存在（那一天 Karin 没运行）或读取失败，按无日志展示
+        })
+        .finally(() => {
+          if (!cancelled) setFileLoading(false);
+        });
+      return () => {
+        cancelled = true;
+      };
+    }
+    // 当天：tail -F 自带末尾回放，之后实时追加；高频行合并渲染。
+    const buffer: KarinLogLine[] = [];
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const flush = () => {
+      timer = null;
+      if (buffer.length === 0) return;
+      const batch = buffer.splice(0, buffer.length);
+      setFileLines(current => {
+        const next = [...current, ...batch];
+        return next.length > FILE_MAX_LINES ? next.slice(next.length - FILE_MAX_LINES) : next;
+      });
+    };
+    const stop = startLogTail(date, line => {
+      const formatted = formatLogFileLine(line, nextFileId.current++);
+      if (!formatted) return;
+      buffer.push(formatted);
+      if (timer === null) timer = setTimeout(flush, FILE_FLUSH_INTERVAL_MS);
+    });
+    return () => {
+      stop();
+      if (timer !== null) clearTimeout(timer);
+    };
+  }, [mode, date, reloadKey, setFollowValue]);
+
+  // 日志文件列表：进「日志」模式时拉一次，日期选择列表用。
+  useEffect(() => {
+    if (mode !== 'file') return;
+    let cancelled = false;
+    listLogDates()
+      .then(available => {
+        if (cancelled) return;
+        const today = todayLogDate();
+        setDates(available.includes(today) ? available : [today, ...available]);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [mode, reloadKey]);
 
   // Android 15 起 targetSdk 35+ 强制 edge-to-edge，manifest 里的 adjustResize 不再缩小窗口，
   // 输入法会直接盖住底部输入行。这里按容器在窗口里的真实底边算需要抬多高：窗口已经被系统缩过
@@ -135,6 +245,10 @@ export default function TerminalScreen({colors, dark, karinRunning, onBack}: Pro
 
   useEffect(() => {
     const subscription = BackHandler.addEventListener('hardwareBackPress', () => {
+      if (dateSheetOpen) {
+        setDateSheetOpen(false);
+        return true;
+      }
       if (selecting) {
         exitSelection();
         return true;
@@ -143,7 +257,7 @@ export default function TerminalScreen({colors, dark, karinRunning, onBack}: Pro
       return true;
     });
     return () => subscription.remove();
-  }, [exitSelection, onBack, selecting]);
+  }, [dateSheetOpen, exitSelection, onBack, selecting]);
 
   // 内容变长时保持贴底；用户上滑查看历史则暂停跟随，不打断阅读。
   const handleContentSizeChange = (_width: number, height: number) => {
@@ -178,6 +292,14 @@ export default function TerminalScreen({colors, dark, karinRunning, onBack}: Pro
   const handleScrollSettled = (event: NativeSyntheticEvent<NativeScrollEvent>) => {
     dragging.current = false;
     followFromGesture(event);
+  };
+
+  /** 切模式 / 切日期：退出多选并回到贴底跟随。 */
+  const switchContext = (next: () => void) => {
+    setSelecting(false);
+    setSelectedIds(new Set());
+    anchorId.current = null;
+    next();
   };
 
   const send = () => {
@@ -257,6 +379,9 @@ export default function TerminalScreen({colors, dark, karinRunning, onBack}: Pro
     0,
   );
 
+  const today = todayLogDate();
+  const dateChipLabel = date === today ? `今天 · ${date.slice(5)}` : date;
+
   return (
     <View ref={root} style={[styles.container, keyboardInset > 0 ? {paddingBottom: keyboardInset} : null]}>
       <View style={[styles.header, {borderBottomColor: colors.border}]}>
@@ -277,9 +402,11 @@ export default function TerminalScreen({colors, dark, karinRunning, onBack}: Pro
           <Text numberOfLines={1} style={[styles.headerHint, {color: colors.muted}]}>
             {selecting
               ? '点行多选，长按选一段'
-              : karinRunning
-                ? 'Karin 运行中 · 长按行选中复制'
-                : 'Karin 未运行'}
+              : mode === 'file'
+                ? `${dateChipLabel} · Karin 日志文件`
+                : karinRunning
+                  ? 'Karin 运行中 · 长按行选中复制'
+                  : 'Karin 未运行'}
           </Text>
         </View>
         {selecting ? (
@@ -303,11 +430,51 @@ export default function TerminalScreen({colors, dark, karinRunning, onBack}: Pro
               accessibilityLabel="多选复制">
               <ListChecks size={17} color={colors.text} />
             </Pressable>
-            <Pressable onPress={clearKarinLog} style={styles.headerButton} accessibilityLabel="清空日志">
-              <Eraser size={17} color={colors.text} />
-            </Pressable>
+            {mode === 'file' ? (
+              <Pressable
+                onPress={() => switchContext(() => setReloadKey(key => key + 1))}
+                style={styles.headerButton}
+                accessibilityLabel="重新加载">
+                <RotateCw size={16} color={colors.text} />
+              </Pressable>
+            ) : (
+              <Pressable onPress={clearKarinLog} style={styles.headerButton} accessibilityLabel="清空日志">
+                <Eraser size={17} color={colors.text} />
+              </Pressable>
+            )}
           </>
         )}
+      </View>
+
+      <View style={[styles.tabsRow, {borderBottomColor: colors.border}]}>
+        <View style={[styles.modeGroup, {backgroundColor: colors.neutralSoft}]}>
+          {(['console', 'file'] as LogMode[]).map(value => {
+            const active = mode === value;
+            return (
+              <Pressable
+                key={value}
+                onPress={() => {
+                  if (mode !== value) switchContext(() => setMode(value));
+                }}
+                style={[styles.modeTab, active ? {backgroundColor: colors.surface} : null]}
+                accessibilityLabel={value === 'file' ? '历史日志' : '控制台'}>
+                <Text style={[styles.modeTabText, {color: active ? colors.accent : colors.muted}]}>
+                  {value === 'file' ? '历史日志' : '控制台'}
+                </Text>
+              </Pressable>
+            );
+          })}
+        </View>
+        {mode === 'file' ? (
+          <Pressable
+            onPress={() => setDateSheetOpen(true)}
+            style={[styles.dateChip, {borderColor: colors.border}]}
+            accessibilityLabel="选择日期">
+            <CalendarDays size={13} color={colors.muted} />
+            <Text style={[styles.dateChipText, {color: colors.text}]}>{dateChipLabel}</Text>
+            <ChevronDown size={13} color={colors.muted} />
+          </Pressable>
+        ) : null}
       </View>
 
       <FlatList
@@ -349,11 +516,16 @@ export default function TerminalScreen({colors, dark, karinRunning, onBack}: Pro
         onMomentumScrollEnd={handleScrollSettled}
         keyboardDismissMode="on-drag"
         keyboardShouldPersistTaps="handled"
-        scrollEventThrottle={16}
         ListEmptyComponent={
           <View style={styles.empty}>
             <Text style={[styles.emptyText, {color: colors.muted}]}>
-              暂无日志{karinRunning ? '' : '，启动 Karin 后显示运行日志'}
+              {mode === 'file'
+                ? fileLoading
+                  ? '正在读取日志…'
+                  : date === today
+                    ? '今天还没有日志，Karin 运行后会自动记录'
+                    : '这一天没有日志'
+                : `暂无日志${karinRunning ? '' : '，启动 Karin 后显示运行日志'}`}
             </Text>
           </View>
         }
@@ -366,32 +538,66 @@ export default function TerminalScreen({colors, dark, karinRunning, onBack}: Pro
         </Pressable>
       ) : null}
 
-      <View style={[styles.inputRow, {borderTopColor: colors.border, backgroundColor: colors.surface}]}>
-        <Text style={[styles.prompt, {color: colors.accent}]}>$</Text>
-        <TextInput
-          value={input}
-          onChangeText={setInput}
-          onSubmitEditing={send}
-          editable={karinRunning}
-          placeholder={karinRunning ? '输入控制台命令，回车发送' : 'Karin 未运行'}
-          placeholderTextColor={colors.muted}
-          style={[styles.input, {color: colors.text}]}
-          autoCapitalize="none"
-          autoCorrect={false}
-          returnKeyType="send"
-          submitBehavior="submit"
-        />
-        <Pressable
-          onPress={send}
-          disabled={!karinRunning || !input.trim()}
-          style={[
-            styles.sendButton,
-            {backgroundColor: karinRunning && input.trim() ? colors.accent : colors.neutralSoft},
-          ]}
-          accessibilityLabel="发送">
-          <CornerDownLeft size={16} color={karinRunning && input.trim() ? '#FFFFFF' : colors.muted} />
+      {mode === 'console' ? (
+        <View style={[styles.inputRow, {borderTopColor: colors.border, backgroundColor: colors.surface}]}>
+          <Text style={[styles.prompt, {color: colors.accent}]}>$</Text>
+          <TextInput
+            value={input}
+            onChangeText={setInput}
+            onSubmitEditing={send}
+            editable={karinRunning}
+            placeholder={karinRunning ? '输入控制台命令，回车发送' : 'Karin 未运行'}
+            placeholderTextColor={colors.muted}
+            style={[styles.input, {color: colors.text}]}
+            autoCapitalize="none"
+            autoCorrect={false}
+            returnKeyType="send"
+            submitBehavior="submit"
+          />
+          <Pressable
+            onPress={send}
+            disabled={!karinRunning || !input.trim()}
+            style={[
+              styles.sendButton,
+              {backgroundColor: karinRunning && input.trim() ? colors.accent : colors.neutralSoft},
+            ]}
+            accessibilityLabel="发送">
+            <CornerDownLeft size={16} color={karinRunning && input.trim() ? '#FFFFFF' : colors.muted} />
+          </Pressable>
+        </View>
+      ) : null}
+
+      <Modal visible={dateSheetOpen} transparent animationType="slide" onRequestClose={() => setDateSheetOpen(false)}>
+        <Pressable style={styles.sheetOverlay} onPress={() => setDateSheetOpen(false)}>
+          <View style={[styles.sheet, {backgroundColor: colors.surface}]} onStartShouldSetResponder={() => true}>
+            <Text style={[styles.sheetTitle, {color: colors.text}]}>选择日期</Text>
+            <ScrollView style={styles.sheetList}>
+              {dates.length === 0 ? (
+                <Text style={[styles.sheetEmpty, {color: colors.muted}]}>还没有日志文件</Text>
+              ) : (
+                dates.map(value => {
+                  const active = value === date;
+                  return (
+                    <Pressable
+                      key={value}
+                      onPress={() => {
+                        setDateSheetOpen(false);
+                        if (value !== date) switchContext(() => setDate(value));
+                      }}
+                      style={[styles.sheetRow, {borderBottomColor: colors.border}]}>
+                      <Text style={[styles.sheetRowText, {color: active ? colors.accent : colors.text}]}>
+                        {dateLabel(value)}
+                      </Text>
+                      <Text style={[styles.sheetRowHint, {color: colors.muted}]}>{value}</Text>
+                      {active ? <Check size={16} color={colors.accent} /> : null}
+                    </Pressable>
+                  );
+                })
+              )}
+            </ScrollView>
+          </View>
         </Pressable>
-      </View>
+      </Modal>
 
       {notice ? <Toast message={notice} colors={colors} bottomOffset={64} /> : null}
     </View>
@@ -405,6 +611,12 @@ const styles = StyleSheet.create({
   headerCopy: {flex: 1},
   headerTitle: {fontSize: 15, fontWeight: '800'},
   headerHint: {fontSize: 10, marginTop: 2},
+  tabsRow: {flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: 12, paddingVertical: 6, borderBottomWidth: 1},
+  modeGroup: {flexDirection: 'row', borderRadius: 8, padding: 2},
+  modeTab: {borderRadius: 6, paddingHorizontal: 14, paddingVertical: 4},
+  modeTabText: {fontSize: 11, fontWeight: '700'},
+  dateChip: {flexDirection: 'row', alignItems: 'center', gap: 5, borderRadius: 8, borderWidth: 1, paddingHorizontal: 10, paddingVertical: 5},
+  dateChipText: {fontSize: 11, fontWeight: '600'},
   list: {flex: 1},
   listContent: {paddingHorizontal: 12, paddingVertical: 8},
   line: {fontFamily: 'monospace', fontSize: 11, lineHeight: 17},
@@ -418,4 +630,12 @@ const styles = StyleSheet.create({
   prompt: {fontFamily: 'monospace', fontSize: 13, fontWeight: '700'},
   input: {flex: 1, fontFamily: 'monospace', fontSize: 12, paddingVertical: 4},
   sendButton: {width: 34, height: 30, borderRadius: 8, alignItems: 'center', justifyContent: 'center'},
+  sheetOverlay: {flex: 1, backgroundColor: 'rgba(0,0,0,0.45)', justifyContent: 'flex-end'},
+  sheet: {borderTopLeftRadius: 14, borderTopRightRadius: 14, maxHeight: '65%', paddingBottom: 16},
+  sheetTitle: {fontSize: 14, fontWeight: '800', paddingHorizontal: 16, paddingTop: 14, paddingBottom: 6},
+  sheetList: {maxHeight: 420},
+  sheetRow: {flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 16, paddingVertical: 12, borderBottomWidth: StyleSheet.hairlineWidth},
+  sheetRowText: {fontSize: 13, fontWeight: '600', flex: 1},
+  sheetRowHint: {fontSize: 11},
+  sheetEmpty: {fontSize: 12, paddingHorizontal: 16, paddingVertical: 12},
 });

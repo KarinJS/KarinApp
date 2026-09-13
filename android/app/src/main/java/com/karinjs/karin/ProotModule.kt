@@ -185,6 +185,71 @@ class ProotModule(private val context: ReactApplicationContext) : ReactContextBa
   @ReactMethod fun addListener(eventName: String) = Unit
   @ReactMethod fun removeListeners(count: Int) = Unit
 
+  /** App 是否已在电池优化白名单里（在名单里 Doze 对本 App 的 CPU/网络限制会大幅放宽）。 */
+  @ReactMethod
+  fun isIgnoringBatteryOptimizations(promise: Promise) {
+    val powerManager = context.getSystemService(android.content.Context.POWER_SERVICE) as android.os.PowerManager
+    promise.resolve(powerManager.isIgnoringBatteryOptimizations(context.packageName))
+  }
+
+  /** 拉起系统「忽略电池优化」授权弹窗（需要 REQUEST_IGNORE_BATTERY_OPTIMIZATIONS 权限）。 */
+  @ReactMethod
+  fun requestIgnoreBatteryOptimizations(promise: Promise) {
+    try {
+      val intent = android.content.Intent(android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS)
+        .setData(android.net.Uri.parse("package:${context.packageName}"))
+        .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+      context.startActivity(intent)
+      promise.resolve(true)
+    } catch (error: Exception) {
+      promise.reject("BATTERY_OPTIMIZATION_FAILED", error)
+    }
+  }
+
+  /** 设备是否有可用的 root（su 能以 uid=0 执行命令）。 */
+  @ReactMethod
+  fun isRootAvailable(promise: Promise) {
+    promise.resolve(runSuCommand("id")?.contains("uid=0") == true)
+  }
+
+  /**
+   * 通过 root 把 App 写进系统级保活白名单：deviceidle 白名单（等价于忽略电池优化，
+   * 但不弹用户授权框）+ 放开后台运行的 appops 限制。逐条执行，单条失败不影响其余。
+   */
+  @ReactMethod
+  fun applyRootKeepAlive(promise: Promise) {
+    val pkg = context.packageName
+    val commands = listOf(
+      "dumpsys deviceidle whitelist +$pkg",
+      "cmd appops set $pkg RUN_ANY_IN_BACKGROUND allow",
+      "cmd appops set $pkg START_FOREGROUND allow",
+    )
+    val results = commands.map { command ->
+      val output = runSuCommand(command)
+      "${command.substringBefore(' ')}: ${if (output != null) "ok" else "failed"}"
+    }
+    promise.resolve(android.text.TextUtils.join("\n", results))
+  }
+
+  /** 用 su 执行一条 shell 命令，3 秒超时；失败（无 root / 被拒绝 / 超时）返回 null。 */
+  private fun runSuCommand(command: String): String? {
+    var process: Process? = null
+    return try {
+      process = ProcessBuilder("su", "-c", command).redirectErrorStream(true).start()
+      // su 弹授权框时输出流会一直不关闭，用看门狗兜底强杀，readText 才能返回
+      val watchdog = java.util.concurrent.ScheduledThreadPoolExecutor(1) { task -> Thread(task).apply { isDaemon = true } }
+      watchdog.schedule({ process.destroyForcibly() }, 3, TimeUnit.SECONDS)
+      val output = process.inputStream.bufferedReader().readText().trim()
+      val exited = process.waitFor(2, TimeUnit.SECONDS)
+      watchdog.shutdownNow()
+      if (exited && process.exitValue() == 0 && output.isNotEmpty()) output else null
+    } catch (_: Exception) {
+      null
+    } finally {
+      process?.destroyForcibly()
+    }
+  }
+
   // ---- 帧收发 ----
 
   private fun sendFrameLocked(writer: DataOutputStream, payload: ByteArray) {
