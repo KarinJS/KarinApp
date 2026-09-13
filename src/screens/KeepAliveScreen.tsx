@@ -1,16 +1,18 @@
 import React, {useCallback, useEffect, useState} from 'react';
-import {AppState, Pressable, ScrollView, StyleSheet, Text, View} from 'react-native';
+import {AppState, Linking, Pressable, ScrollView, StyleSheet, Text, View} from 'react-native';
 import {PermissionsAndroid} from 'react-native';
 import {
   Bell,
   BatteryCharging,
   ChevronLeft,
   Copy,
+  ExternalLink,
   ShieldCheck,
   Terminal,
   TriangleAlert,
+  Zap,
 } from 'lucide-react-native';
-import {foregroundService} from '../services/foregroundService';
+import {foregroundService, ShizukuStatus} from '../services/foregroundService';
 import {setClipboardText} from '../services/clipboardService';
 import {useToast} from '../hooks/useToast';
 import Toast from '../components/Toast';
@@ -22,6 +24,7 @@ type Props = {
 };
 
 const PACKAGE_NAME = 'com.karinjs.karin';
+const SHIZUKU_URL = 'https://shizuku.rikka.app/';
 /** 没有 root 时引导用户用 PC adb（或 Shizuku）执行同样的白名单命令。 */
 const ADB_COMMANDS = [
   `adb shell dumpsys deviceidle whitelist +${PACKAGE_NAME}`,
@@ -40,6 +43,8 @@ export default function KeepAliveScreen({colors, onBack}: Props) {
   const [battery, setBattery] = useState<CheckState>('checking');
   const [rootAvailable, setRootAvailable] = useState<boolean | null>(null);
   const [rootApplying, setRootApplying] = useState(false);
+  const [shizuku, setShizuku] = useState<ShizukuStatus | null>(null);
+  const [shizukuApplying, setShizukuApplying] = useState(false);
   const {notice, showNotice} = useToast();
 
   /** 系统弹窗回来后要重读状态；App 切回前台（含用户从系统设置返回）也重读。 */
@@ -49,6 +54,7 @@ export default function KeepAliveScreen({colors, onBack}: Props) {
       .catch(() => setNotification('denied'));
     foregroundService.isIgnoringBatteryOptimizations().then(granted => setBattery(granted ? 'granted' : 'denied'));
     foregroundService.isRootAvailable().then(setRootAvailable);
+    foregroundService.shizukuStatus().then(setShizuku);
   }, []);
 
   useEffect(() => {
@@ -90,14 +96,83 @@ export default function KeepAliveScreen({colors, onBack}: Props) {
     showNotice('已复制 adb 命令');
   };
 
+  const requestShizuku = () => {
+    foregroundService.requestShizukuPermission().then(granted => {
+      showNotice(granted ? '已获得 Shizuku 权限' : '未授予 Shizuku 权限', granted ? undefined : 5000);
+      refresh();
+    });
+  };
+
+  const applyShizuku = () => {
+    if (shizukuApplying) return;
+    setShizukuApplying(true);
+    foregroundService
+      .applyShizukuKeepAlive()
+      .then(() => {
+        showNotice('已写入系统保活白名单');
+        refresh();
+      })
+      .catch(() => showNotice('写入失败，请确认 Shizuku 服务在运行且已授权', 5000))
+      .finally(() => setShizukuApplying(false));
+  };
+
+  const openShizukuSite = () => {
+    Linking.openURL(SHIZUKU_URL).catch(() => showNotice('打不开链接，请手动搜索 Shizuku', 5000));
+  };
+
+  const badge = (text: string, tone: 'muted' | 'success' | 'danger') => (
+    <View style={[styles.badge, {backgroundColor: tone === 'success' ? colors.successSoft : colors.neutralSoft}]}>
+      <Text style={[styles.badgeText, {color: tone === 'success' ? colors.success : tone === 'danger' ? colors.danger : colors.muted}]}>{text}</Text>
+    </View>
+  );
+
   const statusBadge = (state: CheckState) => {
-    const granted = state === 'granted';
+    if (state === 'checking') return badge('检测中', 'muted');
+    return state === 'granted' ? badge('已授权', 'success') : badge('未授权', 'muted');
+  };
+
+  /** Shizuku 的状态比「已授权 / 未授权」多两档：没装、装了但服务没跑。 */
+  const shizukuBadge = () => {
+    if (!shizuku) return badge('检测中', 'muted');
+    if (!shizuku.installed) return badge('未安装', 'danger');
+    if (!shizuku.running) return badge('未运行', 'muted');
+    return shizuku.granted ? badge('已授权', 'success') : badge('未授权', 'muted');
+  };
+
+  const shizukuHint = () => {
+    if (!shizuku) return '检测中…';
+    if (!shizuku.installed) return '未安装 Shizuku，装好后可用 adb 权限一键写入白名单';
+    if (!shizuku.running) return '已安装 Shizuku，先在 Shizuku 里启动服务再回到本页';
+    if (!shizuku.granted) return '已连接 Shizuku，授权后可借 adb 身份写入白名单';
+    return '已授权，可借 Shizuku 的 adb 身份一键写入系统白名单';
+  };
+
+  const shizukuAction = () => {
+    if (!shizuku) return null;
+    if (!shizuku.installed) {
+      return (
+        <Pressable onPress={openShizukuSite} style={[styles.actionButton, {backgroundColor: colors.neutralSoft}]} accessibilityLabel="Shizuku 官网">
+          <ExternalLink size={14} color={colors.text} />
+          <Text style={[styles.actionButtonText, {color: colors.text}]}>官网</Text>
+        </Pressable>
+      );
+    }
+    if (!shizuku.running) return null;
+    if (!shizuku.granted) {
+      return (
+        <Pressable onPress={requestShizuku} style={[styles.actionButton, {backgroundColor: colors.accent}]} accessibilityLabel="申请 Shizuku 权限">
+          <Text style={styles.actionButtonTextAccent}>授权</Text>
+        </Pressable>
+      );
+    }
     return (
-      <View style={[styles.badge, {backgroundColor: state === 'checking' ? colors.neutralSoft : granted ? colors.successSoft : colors.neutralSoft}]}>
-        <Text style={[styles.badgeText, {color: state === 'checking' ? colors.muted : granted ? colors.success : colors.muted}]}>
-          {state === 'checking' ? '检测中' : granted ? '已授权' : '未授权'}
-        </Text>
-      </View>
+      <Pressable
+        onPress={applyShizuku}
+        disabled={shizukuApplying}
+        style={[styles.actionButton, {backgroundColor: colors.accent}]}
+        accessibilityLabel="Shizuku 一键保活">
+        <Text style={styles.actionButtonTextAccent}>{shizukuApplying ? '写入中…' : '一键保活'}</Text>
+      </Pressable>
     );
   };
 
@@ -143,7 +218,7 @@ export default function KeepAliveScreen({colors, onBack}: Props) {
             {statusBadge(battery)}
           </Pressable>
 
-          <View style={styles.row}>
+          <View style={[styles.row, styles.rowDivider, {borderBottomColor: colors.border}]}>
             <View style={styles.copy}>
               <View style={styles.labelRow}>
                 <Terminal size={14} color={colors.muted} />
@@ -172,11 +247,25 @@ export default function KeepAliveScreen({colors, onBack}: Props) {
               </Pressable>
             )}
           </View>
+
+          <View style={styles.row}>
+            <View style={styles.copy}>
+              <View style={styles.labelRow}>
+                <Zap size={14} color={colors.muted} />
+                <Text style={[styles.label, {color: colors.text}]}>Shizuku 保活</Text>
+              </View>
+              <Text style={[styles.value, {color: colors.muted}]}>{shizukuHint()}</Text>
+            </View>
+            <View style={styles.rowTail}>
+              {shizukuBadge()}
+              {shizukuAction()}
+            </View>
+          </View>
         </View>
 
         {!rootAvailable ? (
           <View style={[styles.commandBlock, {backgroundColor: colors.surface, borderColor: colors.border}]}>
-            <Text style={[styles.commandTitle, {color: colors.muted}]}>在电脑上连接手机后依次执行：</Text>
+            <Text style={[styles.commandTitle, {color: colors.muted}]}>在电脑上连接手机后依次执行（Shizuku 走的也是这几条）：</Text>
             {ADB_COMMANDS.map(command => (
               <Text key={command} style={[styles.commandText, {color: colors.text}]}>
                 {command}
@@ -188,11 +277,12 @@ export default function KeepAliveScreen({colors, onBack}: Props) {
         <View style={[styles.note, {backgroundColor: colors.surface, borderColor: colors.border}]}>
           <View style={styles.labelRow}>
             <ShieldCheck size={14} color={colors.muted} />
-            <Text style={[styles.label, {color: colors.text}]}>Root 保活做了什么</Text>
+            <Text style={[styles.label, {color: colors.text}]}>一键保活做了什么</Text>
           </View>
           <Text style={[styles.noteText, {color: colors.muted}]}>
             把 Karin App 加入系统的 deviceidle 白名单（与「电池优化白名单」等效，但不弹授权框），
-            并放开后台运行、前台服务的 appops 限制，效果优于手动授权。
+            并放开后台运行、前台服务的 appops 限制，效果优于手动授权。没有 root 时，Shizuku
+            会用同样的命令、以 adb（shell）身份执行。
           </Text>
           <View style={[styles.labelRow, styles.noteGap]}>
             <TriangleAlert size={14} color={colors.muted} />
@@ -221,6 +311,7 @@ const styles = StyleSheet.create({
   row: {minHeight: 62, paddingHorizontal: 15, paddingVertical: 12, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 10},
   rowDivider: {borderBottomWidth: StyleSheet.hairlineWidth},
   copy: {flex: 1, gap: 4},
+  rowTail: {flexDirection: 'row', alignItems: 'center', gap: 6},
   labelRow: {flexDirection: 'row', alignItems: 'center', gap: 6},
   label: {fontSize: 14, fontWeight: '700'},
   value: {fontSize: 11, fontWeight: '600', lineHeight: 16},

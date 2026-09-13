@@ -180,6 +180,9 @@ dependencies {
     implementation("com.facebook.react:react-android")
     implementation("org.apache.commons:commons-compress:1.27.1")
     implementation("org.tukaani:xz:1.10")
+    // Shizuku：没有 root 时借 adb 身份写保活白名单（provider 会把 binder 推给本 App）。
+    implementation("dev.rikka.shizuku:api:13.1.5")
+    implementation("dev.rikka.shizuku:provider:13.1.5")
 
     if (hermesEnabled.toBoolean()) {
         implementation("com.facebook.react:hermes-android")

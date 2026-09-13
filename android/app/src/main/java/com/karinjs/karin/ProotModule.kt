@@ -219,16 +219,38 @@ class ProotModule(private val context: ReactApplicationContext) : ReactContextBa
   @ReactMethod
   fun applyRootKeepAlive(promise: Promise) {
     val pkg = context.packageName
-    val commands = listOf(
-      "dumpsys deviceidle whitelist +$pkg",
-      "cmd appops set $pkg RUN_ANY_IN_BACKGROUND allow",
-      "cmd appops set $pkg START_FOREGROUND allow",
-    )
+    val commands = keepAliveWhitelistCommands(pkg)
     val results = commands.map { command ->
       val output = runSuCommand(command)
       "${command.substringBefore(' ')}: ${if (output != null) "ok" else "failed"}"
     }
     promise.resolve(android.text.TextUtils.join("\n", results))
+  }
+
+  /** Shizuku 状态：是否安装 / 服务是否在跑 / 是否已授权。一次取齐，省得刷新时来回三次。 */
+  @ReactMethod
+  fun getShizukuStatus(promise: Promise) {
+    promise.resolve(Arguments.createMap().apply {
+      putBoolean("installed", ShizukuKeepAlive.isInstalled(context))
+      putBoolean("running", ShizukuKeepAlive.isRunning())
+      putBoolean("granted", ShizukuKeepAlive.hasPermission())
+    })
+  }
+
+  /** 拉起 Shizuku 自己的授权弹窗，结果由监听回调 resolve（超时按未授权）。 */
+  @ReactMethod
+  fun requestShizukuPermission(promise: Promise) {
+    try {
+      ShizukuKeepAlive.requestPermission(promise)
+    } catch (error: Exception) {
+      promise.reject("SHIZUKU_PERMISSION_FAILED", error)
+    }
+  }
+
+  /** 借 Shizuku 的 adb 身份写入与 root 相同的保活白名单。 */
+  @ReactMethod
+  fun applyShizukuKeepAlive(promise: Promise) = runAsync(promise, "SHIZUKU_KEEP_ALIVE_FAILED") {
+    ShizukuKeepAlive.applyKeepAlive(context)
   }
 
   /** 用 su 执行一条 shell 命令，3 秒超时；失败（无 root / 被拒绝 / 超时）返回 null。 */

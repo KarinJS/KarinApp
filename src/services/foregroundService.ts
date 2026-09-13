@@ -1,5 +1,14 @@
 import {NativeModules, PermissionsAndroid, Platform} from 'react-native';
 
+/** Shizuku 三态：装没装、服务跑没跑、本 App 有没有被授权。 */
+export type ShizukuStatus = {
+  installed: boolean;
+  running: boolean;
+  granted: boolean;
+};
+
+const SHIZUKU_UNAVAILABLE: ShizukuStatus = {installed: false, running: false, granted: false};
+
 type NativeForegroundService = {
   startForegroundService: () => Promise<string>;
   stopForegroundService: () => Promise<string>;
@@ -7,6 +16,9 @@ type NativeForegroundService = {
   requestIgnoreBatteryOptimizations: () => Promise<boolean>;
   isRootAvailable: () => Promise<boolean>;
   applyRootKeepAlive: () => Promise<string>;
+  getShizukuStatus: () => Promise<ShizukuStatus>;
+  requestShizukuPermission: () => Promise<boolean>;
+  applyShizukuKeepAlive: () => Promise<string>;
 };
 
 const native = NativeModules.KarinProot as NativeForegroundService;
@@ -30,4 +42,10 @@ export const foregroundService = {
   isRootAvailable: () => native.isRootAvailable().catch(() => false),
   /** Root 写入系统保活白名单；返回逐条命令的执行结果文本。 */
   applyRootKeepAlive: () => native.applyRootKeepAlive(),
+  /** Shizuku 状态；Shizuku 未安装或原生模块不可用时按不可用处理。 */
+  shizukuStatus: () => native.getShizukuStatus().catch(() => SHIZUKU_UNAVAILABLE),
+  /** 拉起 Shizuku 授权弹窗，resolve 用户是否授权（无人理会时超时按 false）。 */
+  requestShizukuPermission: () => native.requestShizukuPermission().catch(() => false),
+  /** 借 Shizuku 的 adb 身份写入系统保活白名单；返回逐条命令的执行结果文本。 */
+  applyShizukuKeepAlive: () => native.applyShizukuKeepAlive(),
 };
