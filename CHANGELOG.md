@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.2.2](https://github.com/KarinJS/KarinApp/compare/v1.2.1...v1.2.2) (2026-09-13)
+
+
+### Bug Fixes
+
+* 修复安卓和容器时区不同步的问题 ([cddc117](https://github.com/KarinJS/KarinApp/commit/cddc11731ecf54b592cd6d2c9b09774a452eade0))
+* 加强保活以及优化历史日志 ([e593566](https://github.com/KarinJS/KarinApp/commit/e593566efa86097af64b0ae3f7a4b6a9db20dd5d))
+
 ## [1.2.1](https://github.com/KarinJS/KarinApp/compare/v1.2.0...v1.2.1) (2026-09-12)
 
 
