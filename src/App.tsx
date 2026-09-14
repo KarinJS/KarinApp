@@ -1,5 +1,5 @@
 import React, {useEffect, useRef, useState} from 'react';
-import {ActivityIndicator, Pressable, StatusBar, StyleSheet, Text, View} from 'react-native';
+import {ActivityIndicator, Alert, Pressable, StatusBar, StyleSheet, Text, View} from 'react-native';
 import {SafeAreaProvider, SafeAreaView} from 'react-native-safe-area-context';
 import {Power} from 'lucide-react-native';
 import BottomNav from './components/BottomNav';
@@ -14,7 +14,6 @@ import {useToast} from './hooks/useToast';
 import DashboardScreen from './screens/DashboardScreen';
 import FileManagerScreen from './screens/FileManagerScreen';
 import PluginsScreen from './screens/PluginsScreen';
-import DependencyScreen from './screens/DependencyScreen';
 import SettingsScreen from './screens/SettingsScreen';
 import TerminalScreen from './screens/TerminalScreen';
 import {karinService} from './services/karinService';
@@ -26,6 +25,7 @@ import {getInstalledKarinVersion, switchKarinVersion} from './services/environme
 import {openLogLocation, saveStartupLog} from './services/logService';
 import {getStartupLog, resetContainerEnvironment, resetKarinProjectEnvironment, runStartupTasks} from './startup/startupTasks';
 import {cleanupDownloadedApk} from './services/updateService';
+import {cancelBackupTask, refreshBackupTask, subscribeBackup} from './services/karinBackupService';
 import type {StartupProgress} from './startup/startupTasks';
 import {useAppColors} from './theme/colors';
 import type {Tab} from './types';
@@ -60,11 +60,12 @@ export default function App() {
   const [karinBusy, setKarinBusy] = useState(false);
   const [filesOpen, setFilesOpen] = useState(false);
   const [terminalOpen, setTerminalOpen] = useState(false);
-  const [depsOpen, setDepsOpen] = useState(false);
   const [resetConfirm, setResetConfirm] = useState<'project' | 'container' | null>(null);
   const [resetProgress, setResetProgress] = useState<StartupProgress | null>(null);
   const [resetError, setResetError] = useState('');
   const [devSkipOpen, setDevSkipOpen] = useState(false);
+  const [backupBusy, setBackupBusy] = useState(false);
+  const [openBackup, setOpenBackup] = useState(false);
   /** 启动流程代号：跳过初始化后，进行中流程的回调全部失效（但原生侧无法中断）。 */
   const bootRunRef = useRef(0);
 
@@ -136,6 +137,25 @@ export default function App() {
   useEffect(() => karinService.subscribeExit(() => {
     foregroundService.stop().catch(() => {});
   }), []);
+
+  useEffect(() => subscribeBackup(task => {
+    setBackupBusy(Boolean(task && !['completed', 'failed', 'cancelled'].includes(task.phase)));
+  }), []);
+
+  useEffect(() => {
+    refreshBackupTask().then(task => {
+      if (!task || ['completed', 'failed', 'cancelled'].includes(task.phase)) return;
+      Alert.alert(
+        '发现未完成的 Karin 任务',
+        '上次导入或导出尚未完成。可以继续查看任务，也可以取消并清理未完成的导入文件。',
+        [
+          {text: '稍后处理', style: 'cancel', onPress: () => {}},
+          {text: '取消并清理', style: 'destructive', onPress: () => cancelBackupTask(task.taskId).catch(() => {})},
+          {text: '查看任务', onPress: () => { setActiveTab('设置'); setOpenBackup(true); }},
+        ],
+      );
+    }).catch(() => {});
+  }, []);
 
   const handleRestart = async (force: boolean) => {
     if (containerBusy) {
@@ -313,11 +333,11 @@ export default function App() {
                   onOpen={() => setVersionOpen(true)}
                   onResetProject={() => setResetConfirm('project')}
                   onResetContainer={() => setResetConfirm('container')}
+                  onRefreshVersion={refreshKarinVersion}
+                  openBackup={openBackup}
                 />
-              ) : depsOpen ? (
-                <DependencyScreen colors={colors} onBack={() => setDepsOpen(false)} />
               ) : (
-                <PluginsScreen colors={colors} onOpenDeps={() => setDepsOpen(true)} />
+                <PluginsScreen colors={colors} />
               )}
             </View>
 
@@ -341,7 +361,10 @@ export default function App() {
               </Pressable>
             ) : null}
 
-            <BottomNav activeTab={activeTab} colors={colors} onSelect={tab => { setFilesOpen(false); setTerminalOpen(false); setDepsOpen(false); setActiveTab(tab); }} />
+            <BottomNav activeTab={activeTab} colors={colors} onSelect={tab => {
+              if (backupBusy) return;
+              setFilesOpen(false); setTerminalOpen(false); setActiveTab(tab);
+            }} />
           </View>
         )}
 

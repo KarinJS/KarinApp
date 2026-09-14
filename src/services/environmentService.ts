@@ -1,4 +1,5 @@
 import {executeAndCollect, executeStreaming} from './prootController';
+import {fetchPackageVersions} from './packageVersions';
 
 type EnvironmentInstallHandlers = {
   onPhase: (phase: string) => void;
@@ -38,6 +39,13 @@ async function checkShell(command: string): Promise<boolean> {
 
 const isKarinInstalled = () => checkShell(`test -f ${KARIN_DIR}/node_modules/node-karin/package.json`);
 const isKarinInitialized = () => checkShell(KARIN_INIT_MARKERS.map(file => `test -f ${file}`).join(' && '));
+
+/** 导入 Karin 数据后兜底初始化；只有初始化标记缺失时才执行，避免重复触发 init 内部安装。 */
+export async function ensureKarinInitializedAfterImport(onLog: LogHandler = () => {}): Promise<boolean> {
+  if (await isKarinInitialized()) return false;
+  await runStreaming(KARIN_INIT_COMMAND, onLog, PACKAGE_STEP_TIMEOUT_MS);
+  return true;
+}
 
 /** 读取容器内已安装的 node-karin 版本，读不到时返回空字符串。 */
 export async function getInstalledKarinVersion(): Promise<string> {
@@ -107,16 +115,10 @@ async function prepareKarin(installedKarin: string, onPhase: PhaseHandler, onLog
 }
 
 const KARIN_VERSION_PATTERN = /^\d+\.\d+\.\d+(?:-[\w.]+)?$/;
-const VERSION_LIST_TIMEOUT_MS = 30_000;
 
-/** 从 npm registry 查询 node-karin 的全部发布版本，按从新到旧排序。 */
+/** 从 npm registry 查询 node-karin 的全部发布版本，按从新到旧排序（走 packageVersions 的 15 分钟缓存）。 */
 export async function fetchKarinVersions(): Promise<string[]> {
-  const output = await executeAndCollect('npm view node-karin versions --json 2>/dev/null', VERSION_LIST_TIMEOUT_MS);
-  const parsed: unknown = JSON.parse(output.trim());
-  const list = Array.isArray(parsed) ? parsed : [parsed];
-  const versions = list.filter((v): v is string => typeof v === 'string' && KARIN_VERSION_PATTERN.test(v));
-  if (versions.length === 0) throw new Error('版本列表为空');
-  return versions.reverse();
+  return fetchPackageVersions('node-karin');
 }
 
 /** 在 /root/karin 中切换 node-karin 到指定版本；只安装，不执行 init。 */

@@ -91,6 +91,12 @@ export const isPluginPackageName = (name: string) => PLUGIN_PACKAGE_RES.some(pat
 const DEPENDENCY_NAME_RE = /^(?:@[\w.-]+\/)?[\w.-]+(?:@[\w.^~><=*|-]+)?$/;
 
 /**
+ * 依赖的版本部分：版本号、^ / ~ / x 范围、dist-tag（latest、next）。
+ * github:/link:/workspace: 这类地址不是版本，容器内换版本会把它变成 npm 包，直接拒掉。
+ */
+const DEPENDENCY_SPEC_RE = /^[\w.*^~+-]+$/;
+
+/**
  * Karin 约定：所有 app 类型插件的 .js 文件都放在这个目录，Karin 启动时按文件加载。
  * 所以 app 插件只能按文件维度管理，不能按插件名建目录。
  */
@@ -720,7 +726,11 @@ export const listKarinDependencies = async (): Promise<KarinDependency[]> => {
   };
   collect('dependencies', false);
   collect('devDependencies', true);
-  return [...merged.values()].sort((left, right) => left.name.localeCompare(right.name));
+  /** Karin 运行本体的版本必须最先看到，剩下的按字母序排 */
+  return [...merged.values()].sort((left, right) => {
+    if (left.core !== right.core) return left.core ? -1 : 1;
+    return left.name.localeCompare(right.name);
+  });
 };
 
 /** 安装输入（空格 / 逗号分隔，支持 name@version）→ 校验后的参数列表 */
@@ -740,9 +750,12 @@ export const installKarinDependencies = async (
   names: string[],
   onLog: (line: string) => void,
   signal?: AbortSignal,
+  options: {dev?: boolean} = {},
 ) => {
   if (!names.length) throw new Error('请填写要安装的依赖');
-  return executeStreaming(pnpmCommand(`i ${names.map(shellQuote).join(' ')}`), onLog, 5 * 60 * 1000, signal);
+  /** devDependencies 必须带 -D，否则 pnpm 会把包挪进 dependencies */
+  const flag = options.dev ? ' -D' : '';
+  return executeStreaming(pnpmCommand(`i${flag} ${names.map(shellQuote).join(' ')}`), onLog, 5 * 60 * 1000, signal);
 };
 
 /** 卸载依赖：pnpm remove <name>；Karin 本体不给删 */
@@ -753,4 +766,41 @@ export const removeKarinDependency = async (
 ) => {
   if (isKarinCorePackage(name)) throw new Error(`${name} 是 Karin 运行本体，不能在依赖管理里卸载`);
   return executeStreaming(pnpmCommand(`remove ${shellQuote(name)}`), onLog, 5 * 60 * 1000, signal);
+};
+
+/** 版本 / 范围 / dist-tag 是否可写回 package.json */
+export const isValidDependencySpec = (spec: string) => DEPENDENCY_SPEC_RE.test(spec.trim());
+
+export type KarinDependencyChange = {
+  name: string;
+  /** 目标版本 / 范围，写进 package.json 的 dependencies 值 */
+  spec: string;
+  dev?: boolean;
+};
+
+/**
+ * 按改动后的 spec 重装依赖（依赖管理里改版本）。
+ * dependencies 与 devDependencies 必须分成两条 pnpm i：pnpm i <pkg> 会把包写进 dependencies，
+ * devDependencies 的包只能走 -D，否则改一次版本就被挪出 dev 分组。
+ */
+export const updateKarinDependencySpecs = async (
+  changes: KarinDependencyChange[],
+  onLog: (line: string) => void,
+  signal?: AbortSignal,
+) => {
+  const valid = changes.filter(change => change.name && change.spec);
+  if (!valid.length) throw new Error('没有要修改的依赖');
+  const groups = [
+    {dev: false, changes: valid.filter(change => !change.dev)},
+    {dev: true, changes: valid.filter(change => change.dev)},
+  ];
+  for (const group of groups) {
+    if (!group.changes.length) continue;
+    await installKarinDependencies(
+      group.changes.map(change => `${change.name}@${change.spec}`),
+      onLog,
+      signal,
+      {dev: group.dev},
+    );
+  }
 };

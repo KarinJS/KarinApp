@@ -2,7 +2,9 @@ import React, {useCallback, useEffect, useState} from 'react';
 import {ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, TextInput, View} from 'react-native';
 import {Check, ChevronRight} from 'lucide-react-native';
 import AboutScreen from './AboutScreen';
+import DependencyScreen from './DependencyScreen';
 import KeepAliveScreen from './KeepAliveScreen';
+import KarinBackupScreen from './KarinBackupScreen';
 import {Colors} from '../theme/colors';
 import {executeAndCollect} from '../services/prootController';
 import {isValidGithubProxy, loadAppSettings, normalizeGithubProxy, saveGithubProxy} from '../services/appSettings';
@@ -20,14 +22,17 @@ const REGISTRIES = [
 const normalizeRegistry = (value: string) => value.trim().toLowerCase().replace(/\/+$/, '');
 
 type Props = {
+  /** 依赖管理里可能改过 node-karin 版本，回到设置时重新读一次 */
+  onRefreshVersion: () => void;
   colors: Colors;
   version: string;
   onOpen: () => void;
   onResetProject: () => void;
   onResetContainer: () => void;
+  openBackup?: boolean;
 };
 
-export default function SettingsScreen({colors, version, onOpen, onResetProject, onResetContainer}: Props) {
+export default function SettingsScreen({colors, version, onOpen, onResetProject, onResetContainer, onRefreshVersion, openBackup}: Props) {
   const [registry, setRegistry] = useState<string>(REGISTRIES[0].url);
   const [registryOpen, setRegistryOpen] = useState(false);
   const [proxyInput, setProxyInput] = useState('');
@@ -36,6 +41,12 @@ export default function SettingsScreen({colors, version, onOpen, onResetProject,
   const [proxyError, setProxyError] = useState('');
   const [aboutOpen, setAboutOpen] = useState(false);
   const [keepAliveOpen, setKeepAliveOpen] = useState(false);
+  const [depsOpen, setDepsOpen] = useState(false);
+  const [backupOpen, setBackupOpen] = useState(false);
+
+  useEffect(() => {
+    if (openBackup) setBackupOpen(true);
+  }, [openBackup]);
 
   const readRegistry = useCallback(() => {
     executeAndCollect('npm config get registry')
@@ -96,40 +107,50 @@ export default function SettingsScreen({colors, version, onOpen, onResetProject,
     return <KeepAliveScreen colors={colors} onBack={() => setKeepAliveOpen(false)} />;
   }
 
+  if (depsOpen) {
+    return <DependencyScreen colors={colors} onBack={() => setDepsOpen(false)} onDepsChanged={onRefreshVersion} />;
+  }
+
+  if (backupOpen) {
+    return <KarinBackupScreen colors={colors} onBack={() => setBackupOpen(false)} />;
+  }
+
   return (
     <ScrollView contentContainerStyle={styles.content}>
-      <Text style={[styles.intro, {color: colors.muted}]}>统一管理容器运行环境与 Karin 版本</Text>
-      <View style={[styles.list, {backgroundColor: colors.surface, borderColor: colors.border}]}>
-        <Pressable onPress={() => setAboutOpen(true)} style={styles.row}>
-          <View style={styles.copy}>
-            <Text style={[styles.label, {color: colors.text}]}>关于 Karin App</Text>
-            <Text style={[styles.value, {color: colors.muted}]}>版本信息、检查更新、GitHub 与 QQ 群</Text>
-          </View>
-          <ChevronRight size={18} color={colors.muted} />
-        </Pressable>
-      </View>
+      <Text style={[styles.intro, {color: colors.muted}]}>统一管理容器运行环境、Karin 版本与依赖</Text>
 
-      <View style={[styles.list, styles.listGap, {backgroundColor: colors.surface, borderColor: colors.border}]}>
-        <Pressable onPress={() => setKeepAliveOpen(true)} style={[styles.row, styles.rowDivider, {borderBottomColor: colors.border}]}>
-          <View style={styles.copy}>
-            <Text style={[styles.label, {color: colors.text}]}>保活设置</Text>
-            <Text style={[styles.value, {color: colors.muted}]}>通知、电池优化白名单、ADB / Root 保活</Text>
-          </View>
-          <ChevronRight size={18} color={colors.muted} />
-        </Pressable>
-        <Pressable onPress={onOpen} style={styles.row}>
+      <Text style={[styles.sectionTitle, styles.firstSectionTitle, {color: colors.muted}]}>运行环境</Text>
+      <View style={[styles.list, {backgroundColor: colors.surface, borderColor: colors.border}]}>
+        <Pressable onPress={onOpen} style={[styles.row, styles.rowDivider, {borderBottomColor: colors.border}]}>
           <View style={styles.copy}>
             <Text style={[styles.label, {color: colors.text}]}>Karin 版本</Text>
             <Text style={[styles.value, {color: colors.muted}]}>{version ? `v${version}` : '未安装'}</Text>
           </View>
           <ChevronRight size={18} color={colors.muted} />
         </Pressable>
+        <Pressable onPress={() => setDepsOpen(true)} style={[styles.row, styles.rowDivider, {borderBottomColor: colors.border}]}>
+          <View style={styles.copy}>
+            <Text style={[styles.label, {color: colors.text}]}>依赖管理</Text>
+            <Text style={[styles.value, {color: colors.muted}]}>安装或卸载 /root/karin 下的插件与 npm 依赖</Text>
+          </View>
+          <ChevronRight size={18} color={colors.muted} />
+        </Pressable>
+        <Pressable onPress={() => setKeepAliveOpen(true)} style={styles.row}>
+          <View style={styles.copy}>
+            <Text style={[styles.label, {color: colors.text}]}>保活设置</Text>
+            <Text style={[styles.value, {color: colors.muted}]}>通知、电池优化白名单、ADB / Root 保活</Text>
+          </View>
+          <ChevronRight size={18} color={colors.muted} />
+        </Pressable>
       </View>
 
-      <Text style={[styles.sectionTitle, {color: colors.muted}]}>NPM 源</Text>
+      <Text style={[styles.sectionTitle, {color: colors.muted}]}>网络</Text>
       <View style={[styles.list, {backgroundColor: colors.surface, borderColor: colors.border}]}>
         <Pressable onPress={() => setRegistryOpen(open => !open)} style={styles.row}>
-          <View style={styles.copy}><Text style={[styles.label, {color: colors.text}]}>{registryLabel}</Text><Text numberOfLines={1} style={[styles.value, {color: colors.muted}]}>{registry}</Text></View>
+          <View style={styles.copy}>
+            <Text style={[styles.label, {color: colors.text}]}>NPM 源</Text>
+            <Text numberOfLines={1} style={[styles.value, {color: colors.muted}]}>{`${registryLabel} · ${registry}`}</Text>
+          </View>
           <ChevronRight size={18} color={colors.muted} style={registryOpen ? {transform: [{rotate: '90deg'}]} : undefined} />
         </Pressable>
         {registryOpen ? REGISTRIES.map((item, index) => (
@@ -138,12 +159,8 @@ export default function SettingsScreen({colors, version, onOpen, onResetProject,
             {normalizeRegistry(item.url) === currentRegistry ? <Check size={17} color={colors.accent} /> : null}
           </Pressable>
         )) : null}
-      </View>
-
-      <Text style={[styles.sectionTitle, {color: colors.muted}]}>GitHub 加速</Text>
-      <View style={[styles.list, {backgroundColor: colors.surface, borderColor: colors.border}]}>
-        <View style={[styles.block, styles.rowDivider, {borderBottomColor: colors.border}]}>
-          <Text style={[styles.label, {color: colors.text}]}>加速前缀</Text>
+        <View style={[styles.block, styles.rowDivider, styles.blockDivider, {borderTopColor: colors.border, borderBottomColor: colors.border}]}>
+          <Text style={[styles.label, {color: colors.text}]}>GitHub 加速</Text>
           <TextInput
             autoCapitalize='none'
             autoCorrect={false}
@@ -186,6 +203,24 @@ export default function SettingsScreen({colors, version, onOpen, onResetProject,
         </Pressable>
       </View>
 
+      <Text style={[styles.sectionTitle, {color: colors.muted}]}>应用</Text>
+      <View style={[styles.list, {backgroundColor: colors.surface, borderColor: colors.border}]}>
+        <Pressable onPress={() => setAboutOpen(true)} style={styles.row}>
+          <View style={styles.copy}>
+            <Text style={[styles.label, {color: colors.text}]}>关于 Karin App</Text>
+            <Text style={[styles.value, {color: colors.muted}]}>版本信息、检查更新、GitHub 与 QQ 群</Text>
+          </View>
+          <ChevronRight size={18} color={colors.muted} />
+        </Pressable>
+        <Pressable onPress={() => setBackupOpen(true)} style={styles.row}>
+          <View style={styles.copy}>
+            <Text style={[styles.label, {color: colors.text}]}>Karin 备份</Text>
+            <Text style={[styles.value, {color: colors.muted}]}>导出或导入 Karin 配置、数据与插件</Text>
+          </View>
+          <ChevronRight size={18} color={colors.muted} />
+        </Pressable>
+      </View>
+
       <Text style={[styles.sectionTitle, {color: colors.muted}]}>危险操作</Text>
       <View style={[styles.list, {backgroundColor: colors.surface, borderColor: colors.border}]}>
         <Pressable onPress={onResetProject} style={[styles.row, styles.rowDivider, {borderBottomColor: colors.border}]}>
@@ -212,10 +247,12 @@ const styles = StyleSheet.create({
   content: {paddingHorizontal: 16, paddingTop: 4, paddingBottom: 28},
   intro: {fontSize: 12, lineHeight: 18, marginBottom: 12},
   sectionTitle: {fontSize: 12, fontWeight: '700', marginTop: 20, marginBottom: 8},
+  /** 第一个分组标题紧跟顶部说明，不需要额外上边距 */
+  firstSectionTitle: {marginTop: 8},
   list: {borderWidth: 1, borderRadius: 13, overflow: 'hidden'},
-  /** 相邻两个没有小标题的分组之间留出间距 */
-  listGap: {marginTop: 12},
   block: {paddingHorizontal: 15, paddingVertical: 12, gap: 8},
+  /** GitHub 加速跟在 NPM 源同一个分组里，用一条分隔线断开两段 */
+  blockDivider: {borderTopWidth: StyleSheet.hairlineWidth},
   input: {minHeight: 38, borderWidth: 1, borderRadius: 8, paddingHorizontal: 10, paddingVertical: 7, fontSize: 13, fontFamily: 'monospace'},
   row: {minHeight: 62, paddingHorizontal: 15, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between'},
   rowDivider: {borderBottomWidth: StyleSheet.hairlineWidth},

@@ -2,24 +2,29 @@ import React, {useCallback, useEffect, useRef, useState} from 'react';
 import {ActivityIndicator, BackHandler, Pressable, ScrollView, StyleSheet, Text, TextInput, View} from 'react-native';
 import {ChevronLeft, RefreshCw, Trash2, X} from 'lucide-react-native';
 import ConfirmDialog from '../components/ConfirmDialog';
+import DependencyVersionSheet from '../components/DependencyVersionSheet';
 import LogConsole from '../components/LogConsole';
 import {Colors} from '../theme/colors';
 import {primaryTextStyle} from '../theme/styles';
+import {clearPackageVersionCache} from '../services/packageVersions';
 import {
   installKarinDependencies,
   KarinDependency,
   listKarinDependencies,
   parseDependencyInput,
   removeKarinDependency,
+  updateKarinDependencySpecs,
 } from '../services/pluginService';
 
 type Props = {
+  /** 依赖变动后通知外层重新读一次容器里的 Karin 版本（node-karin 版本可能被改过） */
+  onDepsChanged?: () => void;
   colors: Colors;
   onBack: () => void;
 };
 
 type Run = {
-  kind: 'install' | 'remove';
+  kind: 'install' | 'remove' | 'update';
   target: string;
   status: 'running' | 'done' | 'failed' | 'cancelled';
   logs: string[];
@@ -27,15 +32,19 @@ type Run = {
 
 /**
  * 依赖管理：/root/karin/package.json 里声明的依赖（Karin 本体、插件、普通依赖都在这）。
+ * 点版本号可以换版本，改动先进待保存列表，左上角「保存」才真正安装；Karin 本体固定置顶。
  * 插件市场里没有的 npm 插件也在这里装，装完插件页会自动把它当成未知来源列出来。
  */
-export default function DependencyScreen({colors, onBack}: Props) {
+export default function DependencyScreen({colors, onBack, onDepsChanged}: Props) {
   const [deps, setDeps] = useState<KarinDependency[] | null>(null);
   const [listError, setListError] = useState('');
   const [input, setInput] = useState('');
   const [inputError, setInputError] = useState('');
   const [run, setRun] = useState<Run | null>(null);
   const [removeTarget, setRemoveTarget] = useState<KarinDependency | null>(null);
+  /** 已改但还没保存的版本：依赖名 → 目标 spec */
+  const [pending, setPending] = useState<Record<string, string>>({});
+  const [versionTarget, setVersionTarget] = useState<KarinDependency | null>(null);
   const canceller = useRef<AbortController | null>(null);
   const busy = run?.status === 'running';
 
@@ -64,15 +73,23 @@ export default function DependencyScreen({colors, onBack}: Props) {
   }, [busy, onBack]);
 
   const start = useCallback(
-    async (kind: Run['kind'], target: string, execute: (onLog: (line: string) => void, signal: AbortSignal) => Promise<string>) => {
+    async (
+      kind: Run['kind'],
+      target: string,
+      execute: (onLog: (line: string) => void, signal: AbortSignal) => Promise<unknown>,
+      /** 结果回调：改版本的 pending 只在成功后才清掉 */
+      onSettled?: (ok: boolean) => void,
+    ) => {
       const controller = new AbortController();
       canceller.current = controller;
       setRun({kind, target, status: 'running', logs: []});
       const onLog = (line: string) => setRun(current => (current ? {...current, logs: [...current.logs, line]} : current));
+      let ok = true;
       try {
         await execute(onLog, controller.signal);
         setRun(current => (current ? {...current, status: 'done'} : current));
       } catch (caught) {
+        ok = false;
         const message = caught instanceof Error ? caught.message : String(caught);
         setRun(current =>
           current
@@ -82,9 +99,11 @@ export default function DependencyScreen({colors, onBack}: Props) {
       } finally {
         canceller.current = null;
         load();
+        if (ok) onDepsChanged?.();
+        onSettled?.(ok);
       }
     },
-    [load],
+    [load, onDepsChanged],
   );
 
   const submitInstall = useCallback(() => {
@@ -112,21 +131,73 @@ export default function DependencyScreen({colors, onBack}: Props) {
     start('remove', target.name, (onLog, signal) => removeKarinDependency(target.name, onLog, signal));
   }, [removeTarget, start]);
 
+  const pendingCount = Object.keys(pending).length;
+
+  /** 换版本只记进待保存列表，点保存才装；选回原版本等于撤销这一项 */
+  const applySpec = useCallback((dep: KarinDependency, spec: string) => {
+    setVersionTarget(null);
+    setPending(current => {
+      const next = {...current};
+      if (spec === dep.spec) delete next[dep.name];
+      else next[dep.name] = spec;
+      return next;
+    });
+  }, []);
+
+  const savePending = useCallback(() => {
+    if (busy || !pendingCount) return;
+    const changes = Object.entries(pending).map(([name, spec]) => ({
+      name,
+      spec,
+      dev: deps?.find(dep => dep.name === name)?.dev,
+    }));
+    start(
+      'update',
+      `${changes.length} 个依赖`,
+      (onLog, signal) => updateKarinDependencySpecs(changes, onLog, signal),
+      ok => {
+        if (ok) setPending({});
+      },
+    );
+  }, [busy, deps, pending, pendingCount, start]);
+
+  /** 刷新只重读 package.json；强制刷新再清版本缓存，下次选版本会重新请求 npm */
+  const refresh = useCallback(
+    (force: boolean) => {
+      if (force) clearPackageVersionCache();
+      load();
+    },
+    [load],
+  );
+
   const pluginCount = deps?.filter(dep => dep.plugin).length ?? 0;
 
   return (
     <View style={styles.container}>
       <View style={[styles.header, {borderBottomColor: colors.border}]}>
-        <Pressable accessibilityLabel='返回插件页' onPress={onBack} style={styles.headerButton}>
+        <Pressable accessibilityLabel='返回设置页' onPress={onBack} style={styles.headerButton}>
           <ChevronLeft color={colors.text} size={20} />
         </Pressable>
         <View style={styles.headerCopy}>
           <Text style={[styles.headerTitle, {color: colors.text}]}>依赖管理</Text>
           <Text numberOfLines={1} style={[styles.headerPath, {color: colors.muted}]}>
-            /root/karin/package.json
+            {pendingCount > 0 ? `${pendingCount} 项改动待保存` : '/root/karin/package.json'}
           </Text>
         </View>
-        <Pressable accessibilityLabel='刷新依赖列表' onPress={load} style={styles.headerButton}>
+        {pendingCount > 0 ? (
+          <Pressable
+            accessibilityLabel='保存版本修改'
+            disabled={busy}
+            onPress={savePending}
+            style={[styles.saveButton, {backgroundColor: colors.accent, borderColor: colors.accent}, busy && styles.disabled]}>
+            <Text style={primaryTextStyle}>{`保存 ${pendingCount}`}</Text>
+          </Pressable>
+        ) : null}
+        <Pressable
+          accessibilityLabel='刷新（长按强制刷新并清空版本缓存）'
+          onLongPress={() => refresh(true)}
+          onPress={() => refresh(false)}
+          style={styles.headerButton}>
           <RefreshCw color={colors.muted} size={17} />
         </Pressable>
       </View>
@@ -167,7 +238,7 @@ export default function DependencyScreen({colors, onBack}: Props) {
         <View style={[styles.runBox, {backgroundColor: colors.surface, borderColor: colors.border}]}>
           <View style={styles.runHead}>
             <Text numberOfLines={1} style={[styles.runTitle, {color: colors.text}]}>
-              {`${run.kind === 'install' ? '安装' : '卸载'} ${run.target}`}
+              {`${run.kind === 'install' ? '安装' : run.kind === 'update' ? '更新版本' : '卸载'} ${run.target}`}
             </Text>
             {run.status === 'running' ? (
               <ActivityIndicator color={colors.accent} size='small' />
@@ -212,9 +283,25 @@ export default function DependencyScreen({colors, onBack}: Props) {
                   {dep.name}
                 </Text>
                 <View style={styles.metaRow}>
-                  {dep.spec ? (
+                  <Pressable
+                    accessibilityLabel={`修改 ${dep.name} 的版本`}
+                    disabled={busy}
+                    onPress={() => setVersionTarget(dep)}
+                    style={[
+                      styles.specChip,
+                      {
+                        backgroundColor: pending[dep.name] ? colors.accentSoft : colors.neutralSoft,
+                        borderColor: pending[dep.name] ? colors.accent : colors.border,
+                      },
+                      busy && styles.disabled,
+                    ]}>
+                    <Text numberOfLines={1} style={[styles.specChipText, {color: pending[dep.name] ? colors.accent : colors.text}]}>
+                      {pending[dep.name] ?? (dep.spec || '未声明')}
+                    </Text>
+                  </Pressable>
+                  {pending[dep.name] ? (
                     <Text numberOfLines={1} style={[styles.spec, {color: colors.muted}]}>
-                      {dep.spec}
+                      {`原 ${dep.spec || '未声明'}`}
                     </Text>
                   ) : null}
                   {dep.plugin ? (
@@ -252,7 +339,7 @@ export default function DependencyScreen({colors, onBack}: Props) {
             <Text style={[styles.empty, {color: colors.muted}]}>package.json 里还没声明依赖</Text>
           ) : null}
           <Text style={[styles.footnote, {color: colors.muted}]}>
-            {`卸载会同步 pnpm 与 package.json，插件页的状态会跟着刷新；装进来的 npm 插件只要符合命名约定，插件页就会以「未知来源」列出来。`}
+            {`改版本先记在待保存列表里，点「保存」才会 pnpm i；node-karin 换版本后要重启 Karin 才生效。右上角刷新只重读 package.json，长按可清空版本缓存强制重新拉取。`}
           </Text>
         </ScrollView>
       )}
@@ -268,6 +355,15 @@ export default function DependencyScreen({colors, onBack}: Props) {
         onClose={() => setRemoveTarget(null)}
         onConfirm={confirmRemove}
       />
+      <DependencyVersionSheet
+        colors={colors}
+        dep={versionTarget}
+        visible={versionTarget !== null}
+        onClose={() => setVersionTarget(null)}
+        onSelect={spec => {
+          if (versionTarget) applySpec(versionTarget, spec);
+        }}
+      />
 
     </View>
   );
@@ -282,6 +378,8 @@ const styles = StyleSheet.create({
   headerPath: {fontFamily: 'monospace', fontSize: 10, marginTop: 2},
   installRow: {flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 12, paddingTop: 10},
   input: {flex: 1, minHeight: 38, borderWidth: 1, borderRadius: 9, paddingHorizontal: 10, fontSize: 12},
+  /** 有改动时才出现的保存按钮，跟在刷新按钮左边 */
+  saveButton: {minHeight: 30, borderWidth: 1, borderRadius: 8, paddingHorizontal: 10, alignItems: 'center', justifyContent: 'center'},
   installButton: {minWidth: 62, minHeight: 38, borderWidth: 1, borderRadius: 9, alignItems: 'center', justifyContent: 'center'},
   disabled: {opacity: 0.45},
   hint: {fontSize: 11, lineHeight: 16, paddingHorizontal: 12, paddingTop: 6},
@@ -301,6 +399,8 @@ const styles = StyleSheet.create({
   name: {fontFamily: 'monospace', fontSize: 12, fontWeight: '600'},
   metaRow: {flexDirection: 'row', alignItems: 'center', gap: 5, flexWrap: 'wrap'},
   spec: {fontSize: 10},
+  specChip: {maxWidth: 150, minHeight: 22, borderWidth: 1, borderRadius: 6, paddingHorizontal: 7, justifyContent: 'center'},
+  specChipText: {fontFamily: 'monospace', fontSize: 11},
   tag: {borderRadius: 5, paddingHorizontal: 5, paddingVertical: 1},
   tagText: {fontSize: 9, fontWeight: '700'},
   locked: {fontSize: 10, fontWeight: '700'},

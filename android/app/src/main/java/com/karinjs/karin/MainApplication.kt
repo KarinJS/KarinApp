@@ -20,6 +20,7 @@ class MainApplication : Application(), ReactApplication {
           add(LogPackage())
           add(UpdaterPackage())
           add(AppPluginImportPackage())
+          add(KarinBackupPackage())
         },
     )
   }

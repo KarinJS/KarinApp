@@ -287,7 +287,7 @@ function TaskCard({
   );
 }
 
-export default function PluginsScreen({colors, onOpenDeps}: {colors: Colors; onOpenDeps: () => void}) {
+export default function PluginsScreen({colors}: {colors: Colors}) {
   const insets = useSafeAreaInsets();
   const [snapshot, setSnapshot] = useState<PluginSnapshot>({plugins: [], appDirFiles: []});
   const [loading, setLoading] = useState(true);
@@ -786,13 +786,6 @@ export default function PluginsScreen({colors, onOpenDeps}: {colors: Colors; onO
       <View style={styles.actionRow}>
         <Pressable
           accessibilityRole='button'
-          onPress={onOpenDeps}
-          style={[styles.actionPill, {backgroundColor: colors.surface, borderColor: colors.border}]}>
-          <Package color={colors.accent} size={13} />
-          <Text style={[styles.actionPillText, {color: colors.text}]}>依赖管理</Text>
-        </Pressable>
-        <Pressable
-          accessibilityRole='button'
           onPress={() => {
             setGitError('');
             setGitOpen(true);
@@ -1262,7 +1255,7 @@ export default function PluginsScreen({colors, onOpenDeps}: {colors: Colors; onO
                 <View style={styles.detailStateBox}>
                   <Text style={[styles.detailStateText, {color: colors.text}]}>本地插件（未知来源）</Text>
                   <Text style={[styles.appHint, {color: colors.muted}]}>
-                    {`插件市场里没有这个条目，它是从容器里的 ${detailPlugin ? pluginInstallPath(detailPlugin) : ''} 探测到的。git 插件没有 npm 上的 README 可看，可以直接卸载，卸载在依赖管理里也能做。`}
+                    {`插件市场里没有这个条目，它是从容器里的 ${detailPlugin ? pluginInstallPath(detailPlugin) : ''} 探测到的。git 插件没有 npm 上的 README 可看，可以直接卸载，卸载在设置页的依赖管理里也能做。`}
                   </Text>
                 </View>
               ) : detailState.status === 'error' ? (
@@ -1530,7 +1523,7 @@ const styles = StyleSheet.create({
   summaryRow: {height: 38, paddingHorizontal: 14, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between'},
   summary: {fontSize: 11, fontWeight: '600'},
   refreshButton: {width: 30, height: 30, borderRadius: 15, borderWidth: 1, alignItems: 'center', justifyContent: 'center'},
-  /** 依赖管理 / Git 安装入口 */
+  /** Git 安装入口 */
   actionRow: {flexDirection: 'row', gap: 8, paddingHorizontal: 12, paddingBottom: 8},
   actionPill: {flexDirection: 'row', alignItems: 'center', gap: 5, height: 32, borderWidth: 1, borderRadius: 8, paddingHorizontal: 10},
   actionPillText: {fontSize: 11, fontWeight: '700'},
