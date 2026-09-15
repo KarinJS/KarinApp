@@ -131,7 +131,7 @@ export default function SettingsScreen({colors, version, onOpen, onResetProject,
         <Pressable onPress={() => setDepsOpen(true)} style={[styles.row, styles.rowDivider, {borderBottomColor: colors.border}]}>
           <View style={styles.copy}>
             <Text style={[styles.label, {color: colors.text}]}>依赖管理</Text>
-            <Text style={[styles.value, {color: colors.muted}]}>安装或卸载 /root/karin 下的插件与 npm 依赖</Text>
+            <Text style={[styles.value, {color: colors.muted}]}>安装或卸载 Karin 插件与 npm 依赖</Text>
           </View>
           <ChevronRight size={18} color={colors.muted} />
         </Pressable>
@@ -226,7 +226,7 @@ export default function SettingsScreen({colors, version, onOpen, onResetProject,
         <Pressable onPress={onResetProject} style={[styles.row, styles.rowDivider, {borderBottomColor: colors.border}]}>
           <View style={styles.copy}>
             <Text style={[styles.label, {color: colors.danger}]}>重置 Karin 项目</Text>
-            <Text style={[styles.value, {color: colors.muted}]}>清空 /root/karin 后重新安装并初始化</Text>
+            <Text style={[styles.value, {color: colors.muted}]}>清空 Karin 目录后重新安装并初始化</Text>
           </View>
           <ChevronRight size={18} color={colors.muted} />
         </Pressable>

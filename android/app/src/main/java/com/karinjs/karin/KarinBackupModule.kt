@@ -11,6 +11,9 @@ import java.io.*
 import java.security.MessageDigest
 import java.util.UUID
 import java.util.Collections
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import java.util.concurrent.CancellationException
 import java.util.concurrent.Executors
 import java.util.zip.ZipEntry
@@ -25,6 +28,7 @@ class KarinBackupModule(private val context: ReactApplicationContext) : ReactCon
   private val executor = Executors.newSingleThreadExecutor()
   private val cancelledTasks = Collections.synchronizedSet(mutableSetOf<String>())
   private var pending: Pair<String, Promise>? = null
+  private data class ExportTotals(val files: Int, val bytes: Long)
   companion object { const val PICK_EXPORT = 0x4B80; const val PICK_IMPORT = 0x4B81; const val MARKER = ".karin-backup.json"; const val MAGIC = "KARIN_BACKUP" }
   init { context.addActivityEventListener(this) }
   override fun getName() = "KarinBackup"
@@ -48,7 +52,7 @@ class KarinBackupModule(private val context: ReactApplicationContext) : ReactCon
     if (pending != null) { promise.reject("BACKUP_BUSY", "已有文件选择任务"); return }
     val a = reactApplicationContext.currentActivity ?: run { promise.reject("NO_ACTIVITY", "应用不在前台"); return }
     pending = "export" to promise
-    val i = Intent(Intent.ACTION_CREATE_DOCUMENT).apply { addCategory(Intent.CATEGORY_OPENABLE); type = "application/zip"; putExtra(Intent.EXTRA_TITLE, fileName ?: "karin-backup.zip") }
+    val i = Intent(Intent.ACTION_CREATE_DOCUMENT).apply { addCategory(Intent.CATEGORY_OPENABLE); type = "application/zip"; putExtra(Intent.EXTRA_TITLE, fileName ?: defaultBackupFileName()) }
     try { a.startActivityForResult(i, PICK_EXPORT) } catch (e: Exception) { pending=null; promise.reject("PICK_FAILED", e) }
   }
   @ReactMethod fun pickImport(promise: Promise) {
@@ -65,15 +69,18 @@ class KarinBackupModule(private val context: ReactApplicationContext) : ReactCon
   }
   override fun onNewIntent(intent: Intent) = Unit
 
+  private fun defaultBackupFileName(): String = "karin-backup-${SimpleDateFormat("yyyy-MM-dd_HH-mm-ss", Locale.US).format(Date())}.zip"
+
   @ReactMethod fun exportToUri(uriString: String, pluginListOnly: Boolean, promise: Promise) = runAsync(promise, "BACKUP_EXPORT_FAILED") {
     val root = File(RootfsInstaller(context).ensureContainer(), "root/karin").canonicalFile
     if (!File(root, "package.json").isFile) throw IllegalStateException("Karin 根目录不存在 package.json")
     val uri = Uri.parse(uriString); val resolver = context.contentResolver
     val git = JSONArray(); var count=0; var bytes=0L
+    val totals = countTree(root, root, pluginListOnly)
     resolver.openOutputStream(uri, "w")?.use { os -> ZipOutputStream(BufferedOutputStream(os)).use { zip ->
       val marker = JSONObject().apply { put("magic", MAGIC); put("formatVersion", 1); put("rootDir", "/"); put("pluginListOnly", pluginListOnly) }
       if (pluginListOnly) marker.put("gitPlugins", git)
-      addTree(root, root, zip, pluginListOnly, git) { p, n -> count++; bytes += n; emitProgress("export", p, count, bytes) }
+      addTree(root, root, zip, pluginListOnly, git) { p, n -> count++; bytes += n; emitExportProgress(p, count, totals.files, bytes, totals.bytes) }
       if (pluginListOnly) { val m = JSONObject().apply { put("magic", MAGIC); put("formatVersion",1); put("rootDir", "/"); put("pluginListOnly", true); put("gitPlugins", git) }; putText(zip, MARKER, m.toString(2)) }
       else { val m = JSONObject().apply { put("magic", MAGIC); put("formatVersion",1); put("rootDir", "/"); put("pluginListOnly", false) }; putText(zip, MARKER, m.toString(2)) }
     } } ?: throw IOException("无法写入目标文件")
@@ -222,8 +229,54 @@ class KarinBackupModule(private val context: ReactApplicationContext) : ReactCon
     }
   }
   private fun putText(z:ZipOutputStream,n:String,t:String){z.putNextEntry(ZipEntry(n));z.write(t.toByteArray());z.closeEntry()}
+  private fun countTree(base:File, cur:File, listOnly:Boolean):ExportTotals {
+    var files = 0
+    var bytes = 0L
+    cur.listFiles()?.forEach { f ->
+      if (Files.isSymbolicLink(f.toPath())) return@forEach
+      val rel = f.relativeTo(base).invariantSeparatorsPath
+      if (excluded(rel)) return@forEach
+      if (rel.startsWith("plugins/") && listOnly && f.isDirectory && File(f, ".git").isDirectory && !rel.equals("plugins/karin-plugin-example", true)) return@forEach
+      if (f.isDirectory) {
+        val nested = countTree(base, f, listOnly)
+        files += nested.files
+        bytes += nested.bytes
+      } else {
+        files++
+        bytes += f.length()
+      }
+    }
+    return ExportTotals(files, bytes)
+  }
   private fun writeState(d:File,state:String,done:Int,total:Int){ File(d,"state.json").writeText(JSONObject().apply{put("state",state);put("done",done);put("total",total);put("updatedAt",System.currentTimeMillis())}.toString()) }
-  private fun emitProgress(stage:String,current:String,done:Int,total:Long){ val m=Arguments.createMap().apply{putString("stage",stage);putString("current",current);putInt("done",done);putDouble("total",total.toDouble())}; context.getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter::class.java).emit("KarinBackupProgress",m); context.getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter::class.java).emit("KarinBackupTask",m) }
+  private fun emitProgress(stage:String,current:String,done:Int,total:Long){
+    // WritableMap instances are consumed by the React Native bridge when emitted.
+    // Each event therefore needs its own map; reusing one causes "Map already consumed"
+    // on the second emit and leaves the export task stuck after the file picker returns.
+    fun eventMap(): WritableMap = Arguments.createMap().apply {
+      putString("stage",stage)
+      putString("current",current)
+      putInt("done",done)
+      putDouble("total",total.toDouble())
+    }
+    val emitter = context.getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter::class.java)
+    emitter.emit("KarinBackupProgress", eventMap())
+    emitter.emit("KarinBackupTask", eventMap())
+  }
+  private fun emitExportProgress(current:String,completedFiles:Int,totalFiles:Int,completedBytes:Long,totalBytes:Long){
+    fun eventMap(): WritableMap = Arguments.createMap().apply {
+      putString("stage", "export")
+      putString("current", current)
+      putInt("completedFiles", completedFiles)
+      putInt("totalFiles", totalFiles)
+      putDouble("completedBytes", completedBytes.toDouble())
+      putDouble("totalBytes", totalBytes.toDouble())
+      putDouble("progress", if (totalBytes > 0) completedBytes.toDouble() / totalBytes else if (totalFiles > 0) completedFiles.toDouble() / totalFiles else 1.0)
+    }
+    val emitter = context.getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter::class.java)
+    emitter.emit("KarinBackupProgress", eventMap())
+    emitter.emit("KarinBackupTask", eventMap())
+  }
   private fun emitLog(task:String,msg:String){
     File(context.filesDir,"import-tasks/$task").takeIf { it.isDirectory }?.let { dir ->
       runCatching { File(dir,"logs.ndjson").appendText(msg.replace("\n", " ")+"\n") }

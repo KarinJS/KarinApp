@@ -46,6 +46,22 @@ type NativeBackup = {
 
 export type BackupPending = {taskId: string; state: string; done?: number; total?: number; logs?: string[]};
 
+const pad2 = (value: number) => String(value).padStart(2, '0');
+
+/** Default name shown by the system save picker; users can edit it before saving. */
+export function defaultBackupFileName(date = new Date()) {
+  const stamp = [
+    date.getFullYear(),
+    pad2(date.getMonth() + 1),
+    pad2(date.getDate()),
+  ].join('-') + '_' + [
+    pad2(date.getHours()),
+    pad2(date.getMinutes()),
+    pad2(date.getSeconds()),
+  ].join('-');
+  return `karin-backup-${stamp}.zip`;
+}
+
 const native = NativeModules.KarinBackup as NativeBackup | undefined;
 const listeners = new Set<(task: BackupTask | null) => void>();
 let currentTask: BackupTask | null = null;
@@ -128,7 +144,7 @@ export async function refreshBackupTask() {
 export async function startBackupExport(options: BackupExportOptions) {
   if (!native?.startExport) throw new Error('当前版本不支持 Karin 备份导出');
   emit({taskId: `export-${Date.now()}`, operation: 'export', phase: 'picking', progress: 0, logs: ['等待选择导出文件位置…']});
-  const uri = await native.startExport({...options, fileName: 'karin-backup.zip'});
+  const uri = await native.startExport({...options, fileName: defaultBackupFileName()});
   if (!uri) { emit(null); return null; }
   if (native.exportToUri) {
     await native.exportToUri(uri, options.pluginListOnly);

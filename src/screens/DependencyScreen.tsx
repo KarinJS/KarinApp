@@ -31,7 +31,7 @@ type Run = {
 };
 
 /**
- * 依赖管理：/root/karin/package.json 里声明的依赖（Karin 本体、插件、普通依赖都在这）。
+ * 依赖管理：Karin 目录 package.json 里声明的依赖（Karin 本体、插件、普通依赖都在这）。
  * 点版本号可以换版本，改动先进待保存列表，左上角「保存」才真正安装；Karin 本体固定置顶。
  * 插件市场里没有的 npm 插件也在这里装，装完插件页会自动把它当成未知来源列出来。
  */
@@ -181,7 +181,7 @@ export default function DependencyScreen({colors, onBack, onDepsChanged}: Props)
         <View style={styles.headerCopy}>
           <Text style={[styles.headerTitle, {color: colors.text}]}>依赖管理</Text>
           <Text numberOfLines={1} style={[styles.headerPath, {color: colors.muted}]}>
-            {pendingCount > 0 ? `${pendingCount} 项改动待保存` : '/root/karin/package.json'}
+            {pendingCount > 0 ? `${pendingCount} 项改动待保存` : 'Karin 目录 · package.json'}
           </Text>
         </View>
         {pendingCount > 0 ? (
@@ -347,7 +347,7 @@ export default function DependencyScreen({colors, onBack, onDepsChanged}: Props)
       <ConfirmDialog
         colors={colors}
         title='卸载依赖'
-        body={`将从 /root/karin 卸载 ${removeTarget?.name ?? ''}${
+        body={`将从 Karin 目录卸载 ${removeTarget?.name ?? ''}${
           removeTarget?.plugin ? '。它是插件，卸载后插件页里的条目会一起消失' : '。如果不是插件，卸载可能影响 Karin 运行'
         }。`}
         confirmText='卸载'

@@ -1,5 +1,5 @@
 import React, {useCallback, useEffect, useState} from 'react';
-import {AppState, Linking, Pressable, ScrollView, StyleSheet, Text, View} from 'react-native';
+import {AppState, BackHandler, Linking, Pressable, ScrollView, StyleSheet, Text, View} from 'react-native';
 import {PermissionsAndroid} from 'react-native';
 import {
   Bell,
@@ -46,6 +46,15 @@ export default function KeepAliveScreen({colors, onBack}: Props) {
   const [shizuku, setShizuku] = useState<ShizukuStatus | null>(null);
   const [shizukuApplying, setShizukuApplying] = useState(false);
   const {notice, showNotice} = useToast();
+
+  // 设置子页需要自己接管 Android 返回手势，否则根 App 会直接退出。
+  useEffect(() => {
+    const subscription = BackHandler.addEventListener('hardwareBackPress', () => {
+      onBack();
+      return true;
+    });
+    return () => subscription.remove();
+  }, [onBack]);
 
   /** 系统弹窗回来后要重读状态；App 切回前台（含用户从系统设置返回）也重读。 */
   const refresh = useCallback(() => {

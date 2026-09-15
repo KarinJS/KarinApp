@@ -1,5 +1,5 @@
 import React, {useCallback, useEffect, useMemo, useState} from 'react';
-import {Alert, AppState, BackHandler, Pressable, ScrollView, StyleSheet, Text, View} from 'react-native';
+import {Alert, AppState, BackHandler, Modal, Pressable, ScrollView, StyleSheet, Text, View} from 'react-native';
 import {ChevronLeft, Download, RotateCcw, Trash2, Upload} from 'lucide-react-native';
 import LogConsole from '../components/LogConsole';
 import {requestNotificationPermission, foregroundService} from '../services/foregroundService';
@@ -21,6 +21,7 @@ import {
 import {Colors} from '../theme/colors';
 
 type Props = {colors: Colors; onBack: () => void};
+type ImportConfirmation = {uri: string; message: string};
 
 const phaseLabel: Record<string, string> = {
   picking: '等待选择文件', validating: '校验备份', scanning: '扫描 Karin 文件', staging: '准备导入',
@@ -38,6 +39,7 @@ export default function KarinBackupScreen({colors, onBack}: Props) {
   const [task, setTask] = useState<BackupTask | null>(null);
   const [pluginListOnly, setPluginListOnly] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [importConfirmation, setImportConfirmation] = useState<ImportConfirmation | null>(null);
   const active = Boolean(task && !['completed', 'failed', 'cancelled'].includes(task.phase));
 
   useEffect(() => subscribeBackup(setTask), []);
@@ -47,10 +49,14 @@ export default function KarinBackupScreen({colors, onBack}: Props) {
     return () => subscription.remove();
   }, []);
   useEffect(() => {
-    if (!active) return;
-    const subscription = BackHandler.addEventListener('hardwareBackPress', () => true);
+    // 接管系统返回手势：任务进行中暂不允许离开，空闲时返回设置页。
+    const subscription = BackHandler.addEventListener('hardwareBackPress', () => {
+      if (active) return true;
+      onBack();
+      return true;
+    });
     return () => subscription.remove();
-  }, [active]);
+  }, [active, onBack]);
 
   const percent = typeof task?.progress === 'number' && task.progress >= 0 ? Math.round(task.progress * 100) : 0;
   const detail = useMemo(() => {
@@ -103,33 +109,16 @@ export default function KarinBackupScreen({colors, onBack}: Props) {
         const uri = await pickBackupImport();
         if (!uri) { await foregroundService.stop().catch(() => {}); return; }
         const preview = await inspectBackupImport(uri);
-        const conflictCount = Array.isArray((preview as {conflicts?: unknown} | null)?.conflicts)
-          ? ((preview as {conflicts?: unknown[]}).conflicts?.length ?? 0)
-          : 0;
-        const conflictPaths = Array.isArray((preview as {conflicts?: unknown} | null)?.conflicts)
-          ? ((preview as {conflicts?: unknown[]}).conflicts ?? []).filter((item): item is string => typeof item === 'string').slice(0, 8)
-          : [];
-        const conflictSummary = conflictCount > 0
-          ? `\n重复文件：\n${conflictPaths.map(path => `· ${path}`).join('\n')}${conflictCount > conflictPaths.length ? `\n· 还有 ${conflictCount - conflictPaths.length} 个` : ''}`
-          : '';
-        const rootSummary = preview?.rootDir ? `\n来源目录：${preview.rootDir}` : '';
-        Alert.alert(
-          '确认导入 Karin',
-          preview?.files
-            ? `将导入 ${preview.files} 个文件，目标为容器 /root/karin。${rootSummary}\n检测到 ${conflictCount} 个重复文件。${conflictSummary}\n\n以下选择将应用到整个导入任务。`
-            : '将导入 Karin 备份，目标为容器 /root/karin。以下选择将应用到整个导入任务的重复文件。',
-          [
-            {text: '取消', style: 'cancel', onPress: () => { clearBackupTask(); foregroundService.stop().catch(() => {}); }},
-            {text: '全部保留当前文件', onPress: () => performImport(uri, false)},
-            {text: '全部使用备份覆盖', style: 'destructive', onPress: () => performImport(uri, true)},
-          ],
-        );
+        const message = preview?.files
+          ? `将导入 ${preview.files} 个文件。`
+          : '将导入 Karin 备份。';
+        setImportConfirmation({uri, message});
       }
     } catch (error) {
       setTask({taskId: `error-${Date.now()}`, operation, phase: 'failed', progress: 0, logs: [backupErrorMessage(error)], error: backupErrorMessage(error)});
       await foregroundService.stop().catch(() => {});
     } finally { setBusy(false); }
-  }, [active, busy, pluginListOnly, performImport]);
+  }, [active, busy, pluginListOnly]);
 
   useEffect(() => {
     if (task && ['completed', 'failed', 'cancelled'].includes(task.phase)) foregroundService.stop().catch(() => {});
@@ -150,6 +139,17 @@ export default function KarinBackupScreen({colors, onBack}: Props) {
     if (!task) return;
     resumeBackupTask(task.taskId).catch(error => Alert.alert('无法继续导入', backupErrorMessage(error)));
   };
+  const cancelImportConfirmation = () => {
+    setImportConfirmation(null);
+    clearBackupTask();
+    foregroundService.stop().catch(() => {});
+  };
+  const confirmImport = (overwrite: boolean) => {
+    if (!importConfirmation) return;
+    const {uri} = importConfirmation;
+    setImportConfirmation(null);
+    performImport(uri, overwrite);
+  };
 
   return (
     <View style={styles.container}>
@@ -158,7 +158,7 @@ export default function KarinBackupScreen({colors, onBack}: Props) {
         <Text style={[styles.title, {color: colors.text}]}>Karin 备份</Text>
       </View>
       <ScrollView contentContainerStyle={styles.content}>
-        <Text style={[styles.intro, {color: colors.muted}]}>导出或导入 Karin 实例。备份始终排除 node_modules 与 @karinjs/logs，导入目标固定为容器 /root/karin。</Text>
+        <Text style={[styles.intro, {color: colors.muted}]}>导出或导入 Karin 实例。备份始终排除 node_modules 与 @karinjs/logs。</Text>
         {!task ? <>
           <View style={[styles.card, {backgroundColor: colors.surface, borderColor: colors.border}]}>
             <Text style={[styles.cardTitle, {color: colors.text}]}>导出范围</Text>
@@ -179,10 +179,26 @@ export default function KarinBackupScreen({colors, onBack}: Props) {
         </View>}
         {task ? <LogConsole logs={task.logs} colors={colors} maxHeight={320} placeholder="等待任务日志…" /> : null}
       </ScrollView>
+      <Modal transparent visible={importConfirmation !== null} animationType="fade" onRequestClose={cancelImportConfirmation}>
+        <View style={styles.modalBackdrop}>
+          <View style={[styles.modalCard, {backgroundColor: colors.surface}]}>
+            <Text style={[styles.modalTitle, {color: colors.text}]}>确认导入 Karin</Text>
+            <Text style={[styles.modalBody, {color: colors.muted}]}>{importConfirmation?.message}</Text>
+            <View style={styles.modalActions}>
+              <Pressable onPress={cancelImportConfirmation} style={[styles.modalButton, {borderColor: colors.border}]}>
+                <Text style={[styles.modalButtonText, {color: colors.text}]}>取消</Text>
+              </Pressable>
+              <Pressable onPress={() => confirmImport(true)} style={[styles.modalButton, {backgroundColor: colors.accent, borderColor: colors.accent}]}>
+                <Text style={styles.modalPrimaryText}>导入</Text>
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {flex: 1}, header: {paddingHorizontal: 14, paddingTop: 4, paddingBottom: 10, flexDirection: 'row', alignItems: 'center', gap: 8}, back: {padding: 5}, title: {fontSize: 20, fontWeight: '800'}, content: {paddingHorizontal: 16, paddingBottom: 28, gap: 12}, intro: {fontSize: 12, lineHeight: 18}, card: {borderWidth: 1, borderRadius: 13, padding: 14, gap: 9}, cardTitle: {fontSize: 15, fontWeight: '800'}, cardText: {fontSize: 12, lineHeight: 18}, checkRow: {flexDirection: 'row', alignItems: 'center', gap: 9, paddingVertical: 3}, checkbox: {width: 20, height: 20, borderWidth: 1.5, borderRadius: 5, alignItems: 'center', justifyContent: 'center'}, check: {color: '#FFF', fontWeight: '900', fontSize: 14}, checkLabel: {fontSize: 13, fontWeight: '700'}, action: {minHeight: 48, borderRadius: 11, justifyContent: 'center', alignItems: 'center', flexDirection: 'row', gap: 8}, actionText: {color: '#FFF', fontSize: 14, fontWeight: '800'}, taskCard: {borderWidth: 1, borderRadius: 13, padding: 14, gap: 10}, taskTitleRow: {flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between'}, percent: {fontSize: 16, fontWeight: '900'}, progressTrack: {height: 8, borderRadius: 4, overflow: 'hidden'}, progressBar: {height: 8, borderRadius: 4}, phase: {fontSize: 11, fontWeight: '600'}, cancel: {height: 40, borderWidth: 1, borderRadius: 9, justifyContent: 'center', alignItems: 'center', flexDirection: 'row', gap: 6}, cancelText: {fontSize: 12, fontWeight: '800'}, taskButtons: {flexDirection: 'row', gap: 8}, smallButton: {height: 38, borderRadius: 9, paddingHorizontal: 12, justifyContent: 'center', alignItems: 'center', flexDirection: 'row', gap: 6}, smallButtonText: {color: '#FFF', fontSize: 12, fontWeight: '800'},
+  container: {flex: 1}, header: {paddingHorizontal: 14, paddingTop: 4, paddingBottom: 10, flexDirection: 'row', alignItems: 'center', gap: 8}, back: {padding: 5}, title: {fontSize: 20, fontWeight: '800'}, content: {paddingHorizontal: 16, paddingBottom: 28, gap: 12}, intro: {fontSize: 12, lineHeight: 18}, card: {borderWidth: 1, borderRadius: 13, padding: 14, gap: 9}, cardTitle: {fontSize: 15, fontWeight: '800'}, cardText: {fontSize: 12, lineHeight: 18}, checkRow: {flexDirection: 'row', alignItems: 'center', gap: 9, paddingVertical: 3}, checkbox: {width: 20, height: 20, borderWidth: 1.5, borderRadius: 5, alignItems: 'center', justifyContent: 'center'}, check: {color: '#FFF', fontWeight: '900', fontSize: 14}, checkLabel: {fontSize: 13, fontWeight: '700'}, action: {minHeight: 48, borderRadius: 11, justifyContent: 'center', alignItems: 'center', flexDirection: 'row', gap: 8}, actionText: {color: '#FFF', fontSize: 14, fontWeight: '800'}, taskCard: {borderWidth: 1, borderRadius: 13, padding: 14, gap: 10}, taskTitleRow: {flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between'}, percent: {fontSize: 16, fontWeight: '900'}, progressTrack: {height: 8, borderRadius: 4, overflow: 'hidden'}, progressBar: {height: 8, borderRadius: 4}, phase: {fontSize: 11, fontWeight: '600'}, cancel: {height: 40, borderWidth: 1, borderRadius: 9, justifyContent: 'center', alignItems: 'center', flexDirection: 'row', gap: 6}, cancelText: {fontSize: 12, fontWeight: '800'}, taskButtons: {flexDirection: 'row', gap: 8}, smallButton: {height: 38, borderRadius: 9, paddingHorizontal: 12, justifyContent: 'center', alignItems: 'center', flexDirection: 'row', gap: 6}, smallButtonText: {color: '#FFF', fontSize: 12, fontWeight: '800'}, modalBackdrop: {flex: 1, backgroundColor: 'rgba(0,0,0,0.46)', alignItems: 'center', justifyContent: 'center', padding: 24}, modalCard: {width: '100%', borderRadius: 16, padding: 20}, modalTitle: {fontSize: 20, fontWeight: '800'}, modalBody: {fontSize: 13, lineHeight: 19, marginTop: 8}, modalActions: {flexDirection: 'row', gap: 8, marginTop: 22}, modalButton: {flex: 1, minHeight: 42, borderRadius: 9, borderWidth: 1, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 5}, modalButtonText: {fontSize: 12, fontWeight: '700'}, modalPrimaryText: {color: '#FFF', fontSize: 12, fontWeight: '700'},
 });

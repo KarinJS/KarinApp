@@ -48,7 +48,7 @@ type Notice = {
 type Transfer = {
   mode: 'copy' | 'move';
   entry: FileEntry;
-  dir: string; // 选择器当前目录，相对 /root/karin，'' 为根
+  dir: string; // 选择器当前目录，相对 Karin 目录，'' 为根
   dirs: FileEntry[] | null; // 当前目录下的子目录
   error: string;
   busy: boolean;
@@ -60,9 +60,9 @@ function formatSize(size: number): string {
   return `${(size / 1024 / 1024).toFixed(1)} MB`;
 }
 
-/** Karin 项目（/root/karin）文件浏览与编辑。 */
+/** Karin 项目文件浏览与编辑。 */
 export default function FileManagerScreen({colors, onBack}: Props) {
-  const [path, setPath] = useState(''); // 相对 /root/karin 的当前目录，'' 为根
+  const [path, setPath] = useState(''); // 相对 Karin 目录的当前目录，'' 为根
   const [entries, setEntries] = useState<FileEntry[] | null>(null);
   const [listError, setListError] = useState('');
   const [editing, setEditing] = useState<Editing | null>(null);
@@ -245,7 +245,7 @@ export default function FileManagerScreen({colors, onBack}: Props) {
     setTransfer({...transfer, busy: true, error: ''});
     run(src, dst)
       .then(() => {
-        setNotice({text: transfer.mode === 'copy' ? `已复制到 /root/karin/${dst}` : `已移动到 /root/karin/${dst}`, error: false});
+        setNotice({text: transfer.mode === 'copy' ? `已复制到 Karin 目录：${dst}` : `已移动到 Karin 目录：${dst}`, error: false});
         setTransfer(null);
         load(path);
       })
@@ -330,7 +330,7 @@ export default function FileManagerScreen({colors, onBack}: Props) {
         <View style={styles.headerCopy}>
           <Text style={[styles.headerTitle, {color: colors.text}]}>文件管理</Text>
           <Text numberOfLines={1} style={[styles.headerPath, {color: colors.muted}]}>
-            /root/karin{path ? `/${path}` : ''}
+            Karin 目录{path ? ` / ${path}` : ''}
           </Text>
         </View>
         <Pressable onPress={() => setCreating({name: '', error: '', busy: false})} style={styles.headerButton}>
@@ -442,7 +442,7 @@ export default function FileManagerScreen({colors, onBack}: Props) {
         </Modal>
       ) : null}
 
-      {/* 复制/移动的目标目录选择器（只列目录，根为 /root/karin） */}
+      {/* 复制/移动的目标目录选择器（只列目录，根为 Karin 目录） */}
       {transfer ? (
         <Modal
           transparent
@@ -457,7 +457,7 @@ export default function FileManagerScreen({colors, onBack}: Props) {
                 {transfer.mode === 'copy' ? '复制到' : '移动到'}
               </Text>
               <Text numberOfLines={1} style={[styles.modalBody, {color: colors.muted}]}>
-                {transfer.entry.name} → /root/karin{transfer.dir ? `/${transfer.dir}` : ''}
+                {transfer.entry.name} → Karin 目录{transfer.dir ? ` / ${transfer.dir}` : ''}
               </Text>
               <View style={[styles.pickerBox, {borderColor: colors.border}]}>
                 {transfer.dir ? (
@@ -540,7 +540,7 @@ export default function FileManagerScreen({colors, onBack}: Props) {
             <View style={[styles.modal, {backgroundColor: colors.surface}]}>
               <Text style={[styles.modalTitle, {color: colors.text}]}>新建</Text>
               <Text numberOfLines={1} style={[styles.modalBody, {color: colors.muted}]}>
-                位于 /root/karin{path ? `/${path}` : ''}
+                位于 Karin 目录{path ? ` / ${path}` : ''}
               </Text>
               <TextInput
                 value={creating.name}
