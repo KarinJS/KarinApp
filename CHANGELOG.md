@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.2.4](https://github.com/KarinJS/KarinApp/compare/v1.2.3...v1.2.4) (2026-09-14)
+
+
+### Bug Fixes
+
+* 备份&导入 ([09cea5d](https://github.com/KarinJS/KarinApp/commit/09cea5dcb7c62fa13072c798b978a617bf7af9e4))
+
 ## [1.2.3](https://github.com/KarinJS/KarinApp/compare/v1.2.2...v1.2.3) (2026-09-13)
 
 
