@@ -1,5 +1,4 @@
 import {useCallback, useMemo, useRef, useState} from 'react';
-import {Alert} from 'react-native';
 
 export type PluginTaskStatus = 'running' | 'warning' | 'completed' | 'failed' | 'cancelled';
 export type PluginTaskKind = 'install' | 'remove';
@@ -36,6 +35,12 @@ type PendingWarning = {
   open: boolean;
 };
 
+/** 当前需要由任务面板显示的警告确认。弹窗由页面渲染，避免任务 hook 直接调用原生 Alert。 */
+export type PluginTaskWarningDialog = {
+  taskId: string;
+  warning: PluginTaskWarning;
+};
+
 const addLog = (logs: string[], line: string) => [...logs, line].slice(-2000);
 let nextTaskNumber = 0;
 const taskId = () => `plugin-task-${Date.now()}-${++nextTaskNumber}`;
@@ -46,6 +51,7 @@ const taskId = () => `plugin-task-${Date.now()}-${++nextTaskNumber}`;
  */
 export function usePluginTasks() {
   const [tasks, setTasks] = useState<Record<string, PluginTask>>({});
+  const [warningDialog, setWarningDialog] = useState<PluginTaskWarningDialog | null>(null);
   const controllers = useRef<Record<string, AbortController>>({});
   const warnings = useRef<Record<string, PendingWarning>>({});
 
@@ -79,6 +85,7 @@ export function usePluginTasks() {
       const pending = warnings.current[id];
       delete warnings.current[id];
       pending?.resolve(false);
+      setWarningDialog(current => (current?.taskId === id ? null : current));
       updateTask(id, task => ({
         ...task,
         status: 'running',
@@ -148,7 +155,7 @@ export function usePluginTasks() {
 
   const removeTask = useCallback((id: string) => {
     setTasks(current => {
-      if (current[id]?.status !== 'completed') return current;
+      if (!['completed', 'cancelled'].includes(current[id]?.status ?? '')) return current;
       const next = {...current};
       delete next[id];
       return next;
@@ -161,11 +168,21 @@ export function usePluginTasks() {
     if (!pending || pending.open || !controller || controller.signal.aborted) return;
     const warning = pending.warning;
     pending.open = true;
-    const choose = (accepted: boolean) => {
+    setWarningDialog({taskId: id, warning});
+  }, []);
+
+  const resolveWarning = useCallback((id: string, accepted: boolean) => {
+    const pending = warnings.current[id];
+    const controller = controllers.current[id];
+    // 绑定当前弹窗对应的 PendingWarning，避免旧弹窗回调误处理同一任务后续的新警告。
+    if (!pending || pending.open === false || warningDialog?.taskId !== id || warningDialog.warning !== pending.warning || !controller || controller.signal.aborted) {
+      return;
+    }
+    const choose = (confirmed: boolean) => {
       // 弹窗可能在终止之后才收到点击；只能处理当时的这一条警告。
       if (warnings.current[id] !== pending || controllers.current[id] !== controller || controller.signal.aborted) return;
       delete warnings.current[id];
-      if (accepted) {
+      if (confirmed) {
         updateTask(id, current => ({
           ...current,
           status: 'running',
@@ -176,21 +193,26 @@ export function usePluginTasks() {
         appendLog(id, '已选择取消');
         controller.abort();
       }
-      pending.resolve(accepted);
+      pending.resolve(confirmed);
     };
-    Alert.alert(
-      warning.title ?? '安装警告',
-      warning.message,
-      [
-        {text: warning.cancelLabel ?? '否', style: 'cancel', onPress: () => choose(false)},
-        {text: warning.confirmLabel ?? '是', style: 'destructive', onPress: () => choose(true)},
-      ],
-      {cancelable: false},
-    );
-  }, [appendLog, updateTask]);
+    choose(accepted);
+    setWarningDialog(current => (current?.taskId === id ? null : current));
+  }, [appendLog, updateTask, warningDialog]);
 
   const taskList = useMemo(() => Object.values(tasks).sort((left, right) => right.startedAt - left.startedAt), [tasks]);
   const running = useMemo(() => taskList.some(task => task.status === 'running' || task.status === 'warning'), [taskList]);
 
-  return {tasks, taskList, running, runTask, stopTask, removeTask, showWarning, updateTask, appendLog};
+  return {
+    tasks,
+    taskList,
+    running,
+    runTask,
+    stopTask,
+    removeTask,
+    showWarning,
+    resolveWarning,
+    warningDialog,
+    updateTask,
+    appendLog,
+  };
 }

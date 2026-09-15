@@ -8,6 +8,7 @@ type Props = {
   title: string;
   body: string;
   confirmText: string;
+  cancelText?: string;
   colors: Colors;
   /** 确认键配色：danger（默认，用于危险操作）/ primary（普通确认） */
   tone?: 'danger' | 'primary';
@@ -16,7 +17,7 @@ type Props = {
 };
 
 /** 通用确认弹窗（危险操作二次确认，确认键为警示色）。 */
-export default function ConfirmDialog({visible, title, body, confirmText, colors, tone = 'danger', onConfirm, onClose}: Props) {
+export default function ConfirmDialog({visible, title, body, confirmText, cancelText = '取消', colors, tone = 'danger', onConfirm, onClose}: Props) {
   const confirmColor = tone === 'primary' ? colors.accent : colors.danger;
   return (
     <Modal transparent visible={visible} animationType="fade" onRequestClose={onClose}>
@@ -26,7 +27,7 @@ export default function ConfirmDialog({visible, title, body, confirmText, colors
           <Text style={[styles.body, {color: colors.muted}]}>{body}</Text>
           <View style={styles.actions}>
             <Pressable onPress={onClose} style={[styles.button, {borderColor: colors.border}]}>
-              <Text style={[styles.buttonText, {color: colors.text}]}>取消</Text>
+              <Text style={[styles.buttonText, {color: colors.text}]}>{cancelText}</Text>
             </Pressable>
             <Pressable
               onPress={onConfirm}

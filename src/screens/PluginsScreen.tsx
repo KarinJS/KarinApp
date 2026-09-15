@@ -41,6 +41,7 @@ import {
 import DraggableFab from '../components/DraggableFab';
 import {GithubIcon, NpmIcon} from '../components/BrandIcons';
 import PluginTaskCard from '../components/PluginTaskCard';
+import ConfirmDialog from '../components/ConfirmDialog';
 import MarkdownView from '../components/MarkdownView';
 import {Colors} from '../theme/colors';
 import {loadAppSettings} from '../services/appSettings';
@@ -202,7 +203,7 @@ export default function PluginsScreen({colors, taskManager}: {colors: Colors; ta
   const [filter, setFilter] = useState('all');
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [query, setQuery] = useState('');
-  const {taskList, running: tasksBusy, runTask: executeTask, stopTask, removeTask, showWarning} = taskManager;
+  const {taskList, running: tasksBusy, runTask: executeTask, stopTask, removeTask, showWarning, warningDialog, resolveWarning} = taskManager;
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [tasksOpen, setTasksOpen] = useState(false);
   const [detailPlugin, setDetailPlugin] = useState<Plugin | null>(null);
@@ -906,6 +907,18 @@ export default function PluginsScreen({colors, taskManager}: {colors: Colors; ta
           </Animated.View>
         </View>
       </Modal>
+
+      <ConfirmDialog
+        body={warningDialog?.warning.message ?? ''}
+        cancelText={warningDialog?.warning.cancelLabel ?? '否'}
+        colors={colors}
+        confirmText={warningDialog?.warning.confirmLabel ?? '是'}
+        onClose={() => warningDialog && resolveWarning(warningDialog.taskId, false)}
+        onConfirm={() => warningDialog && resolveWarning(warningDialog.taskId, true)}
+        title={warningDialog?.warning.title ?? '安装警告'}
+        tone='primary'
+        visible={warningDialog !== null}
+      />
 
       <Modal
         animationType='fade'

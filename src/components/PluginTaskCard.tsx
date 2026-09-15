@@ -30,10 +30,10 @@ type Props = {
   task: PluginTask;
 };
 
-/** 任务卡：独立警告入口、日志展开，以及已完成任务的双向滑动删除。 */
+/** 任务卡：独立警告入口、日志展开，以及完成/终止任务的双向滑动删除。 */
 export default function PluginTaskCard({colors, expanded, onToggle, onStop, onDelete, onWarning, task}: Props) {
   const running = task.status === 'running' || task.status === 'warning';
-  const completed = task.status === 'completed';
+  const deletable = task.status === 'completed' || task.status === 'cancelled';
   const status = statusStyle(task.status, colors);
   const [now, setNow] = useState(task.startedAt);
   const translateX = useRef(new Animated.Value(0)).current;
@@ -47,14 +47,18 @@ export default function PluginTaskCard({colors, expanded, onToggle, onStop, onDe
 
   const panResponder = useMemo(() => PanResponder.create({
     onStartShouldSetPanResponder: () => false,
+    // Capture horizontal movement anywhere in the card, while leaving vertical
+    // movement to the containing/task-log ScrollViews.
+    onMoveShouldSetPanResponderCapture: (_event, gesture) =>
+      deletable && Math.abs(gesture.dx) > 8 && Math.abs(gesture.dx) > Math.abs(gesture.dy) * 1.3,
     onMoveShouldSetPanResponder: (_event, gesture) =>
-      completed && Math.abs(gesture.dx) > 8 && Math.abs(gesture.dx) > Math.abs(gesture.dy) * 1.3,
+      deletable && Math.abs(gesture.dx) > 8 && Math.abs(gesture.dx) > Math.abs(gesture.dy) * 1.3,
     onPanResponderGrant: () => {
       translateX.stopAnimation(value => { originX.current = value; });
     },
     onPanResponderMove: (_event, gesture) => translateX.setValue(originX.current + gesture.dx),
     onPanResponderRelease: (_event, gesture) => {
-      if (completed && Math.abs(gesture.dx) > 72) {
+      if (deletable && Math.abs(gesture.dx) > 72) {
         Animated.timing(translateX, {
           toValue: (gesture.dx < 0 ? -1 : 1) * (width.current + 32),
           duration: 160,
@@ -64,18 +68,20 @@ export default function PluginTaskCard({colors, expanded, onToggle, onStop, onDe
         Animated.spring(translateX, {toValue: 0, useNativeDriver: true}).start();
       }
     },
+    onPanResponderTerminationRequest: () => false,
     onPanResponderTerminate: () => Animated.spring(translateX, {toValue: 0, useNativeDriver: true}).start(),
-  }), [completed, onDelete, translateX]);
+  }), [deletable, onDelete, translateX]);
 
   const elapsed = (task.endedAt ?? now) - task.startedAt;
   return (
     <Animated.View
+      {...panResponder.panHandlers}
       onLayout={event => { width.current = event.nativeEvent.layout.width; }}
       style={[
         styles.card,
         {backgroundColor: colors.neutralSoft, borderColor: colors.border, transform: [{translateX}]},
       ]}>
-      <View {...panResponder.panHandlers} style={styles.header}>
+      <View style={styles.header}>
         {task.kind === 'remove' ? (
           <Trash2 size={15} color={colors.danger} />
         ) : (
@@ -131,7 +137,7 @@ export default function PluginTaskCard({colors, expanded, onToggle, onStop, onDe
       {expanded ? (
         <LogConsole colors={colors} logs={task.logs} maxHeight={180} placeholder='等待任务日志…' />
       ) : null}
-      {completed ? (
+      {deletable ? (
         <Text style={[styles.swipeHint, {color: colors.muted}]}>左右滑动删除任务</Text>
       ) : null}
     </Animated.View>

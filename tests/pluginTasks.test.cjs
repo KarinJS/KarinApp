@@ -10,8 +10,7 @@ const {act, create} = require('react-test-renderer');
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
-// 只替换这个 hook 的 Alert，绕过 RN preset 的 ESM 路径问题，不改全局测试配置。
-const loadHook = alerts => {
+const loadHook = () => {
   const sourcePath = path.resolve(__dirname, '../src/hooks/usePluginTasks.ts');
   const compiled = ts.transpileModule(fs.readFileSync(sourcePath, 'utf8'), {
     compilerOptions: {module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, esModuleInterop: true},
@@ -20,9 +19,7 @@ const loadHook = alerts => {
   loaded.filename = sourcePath;
   loaded.paths = Module._nodeModulePaths(path.dirname(sourcePath));
   const originalRequire = loaded.require.bind(loaded);
-  loaded.require = name => name === 'react-native'
-    ? {Alert: {alert: (title, message, buttons) => alerts.push({title, message, buttons})}}
-    : originalRequire(name);
+  loaded.require = name => originalRequire(name);
   loaded._compile(compiled, sourcePath);
   return loaded.exports.usePluginTasks;
 };
@@ -34,8 +31,7 @@ const deferred = () => {
 };
 
 const mountTasks = async () => {
-  const alerts = [];
-  const usePluginTasks = loadHook(alerts);
+  const usePluginTasks = loadHook();
   let manager;
   let renderer;
   function Harness() {
@@ -45,12 +41,11 @@ const mountTasks = async () => {
   await act(async () => { renderer = create(React.createElement(Harness)); });
   return {
     get manager() { return manager; },
-    alerts,
     async dispose() { await act(async () => renderer.unmount()); },
   };
 };
 
-test('警告只在点击后弹窗，确认后继续并保留任务日志', async () => {
+test('警告只在点击后显示自定义弹窗状态，确认后继续并保留任务日志', async () => {
   const app = await mountTasks();
   let task;
   let accepted;
@@ -64,11 +59,12 @@ test('警告只在点击后弹窗，确认后继续并保留任务日志', async
   const id = app.manager.taskList[0].id;
   assert.equal(app.manager.tasks[id].status, 'warning');
   assert.equal(app.manager.tasks[id].name, '@scope/karin-plugin-a');
-  assert.equal(app.alerts.length, 0);
+  assert.equal(app.manager.warningDialog, null);
   assert.match(app.manager.tasks[id].logs.join('\n'), /警告：.*是否覆盖/);
   await act(async () => { app.manager.showWarning(id); app.manager.showWarning(id); });
-  assert.equal(app.alerts.length, 1, '重复点击不应打开多个确认弹窗');
-  await act(async () => { app.alerts[0].buttons[1].onPress(); await task; });
+  assert.equal(app.manager.warningDialog?.taskId, id);
+  assert.equal(app.manager.warningDialog?.warning.message, '目录已存在，是否覆盖？');
+  await act(async () => { app.manager.resolveWarning(id, true); await task; });
   assert.equal(accepted, true);
   assert.equal(app.manager.tasks[id].status, 'completed');
   assert.deepEqual(app.manager.tasks[id].logs.slice(-3), ['已确认，继续执行', '正在解压插件', '任务已完成']);
@@ -88,7 +84,7 @@ test('警告选择否会中止任务并释放等待', async () => {
   });
   const id = app.manager.taskList[0].id;
   await act(async () => { app.manager.showWarning(id); });
-  await act(async () => { app.alerts[0].buttons[0].onPress(); await task; });
+  await act(async () => { app.manager.resolveWarning(id, false); await task; });
   assert.equal(accepted, false);
   assert.equal(signal.aborted, true);
   assert.equal(app.manager.tasks[id].status, 'cancelled');
@@ -117,7 +113,7 @@ test('停止等待中的任务后，迟到的确认不能恢复任务且清理�
   assert.equal(accepted, false);
   assert.equal(app.manager.tasks[id].cancelling, true);
   assert.equal(app.manager.running, true);
-  await act(async () => { app.alerts[0].buttons[1].onPress(); });
+  await act(async () => { app.manager.resolveWarning(id, true); });
   assert.equal(app.manager.tasks[id].warning, undefined);
   assert.equal(app.manager.tasks[id].cancelling, true);
   let concurrentRan = false;
@@ -151,7 +147,7 @@ test('同名重复安装有独立 ID，进行中复用现有任务', async () =>
   await app.dispose();
 });
 
-test('只允许删除已完成的任务，失败、已终止、警告和运行中保留', async () => {
+test('只允许删除已完成或已终止的任务，失败、警告和运行中保留', async () => {
   const app = await mountTasks();
   let completed;
   let failed;
@@ -171,9 +167,10 @@ test('只允许删除已完成的任务，失败、已终止、警告和运行�
   await act(async () => { [completed, failed, cancelled, warningId].forEach(id => app.manager.removeTask(id)); });
   assert.equal(app.manager.tasks[completed], undefined);
   assert.equal(app.manager.tasks[failed].status, 'failed');
-  assert.equal(app.manager.tasks[cancelled].status, 'cancelled');
+  assert.equal(app.manager.tasks[cancelled], undefined);
   assert.equal(app.manager.tasks[warningId].status, 'warning');
-  await act(async () => { app.manager.showWarning(warningId); app.alerts[0].buttons[1].onPress(); });
+  await act(async () => { app.manager.showWarning(warningId); });
+  await act(async () => { app.manager.resolveWarning(warningId, true); });
   await act(async () => { app.manager.removeTask(warningId); });
   assert.equal(app.manager.tasks[warningId].status, 'running');
   await act(async () => { finish.resolve(); await warningTask; });
