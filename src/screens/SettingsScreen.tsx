@@ -131,7 +131,7 @@ export default function SettingsScreen({colors, version, onOpen, onResetProject,
         <Pressable onPress={() => setDepsOpen(true)} style={[styles.row, styles.rowDivider, {borderBottomColor: colors.border}]}>
           <View style={styles.copy}>
             <Text style={[styles.label, {color: colors.text}]}>依赖管理</Text>
-            <Text style={[styles.value, {color: colors.muted}]}>安装或卸载 Karin 插件与 npm 依赖</Text>
+            <Text style={[styles.value, {color: colors.muted}]}>管理项目 package.json 中的依赖与版本</Text>
           </View>
           <ChevronRight size={18} color={colors.muted} />
         </Pressable>

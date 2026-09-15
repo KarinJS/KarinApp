@@ -37,15 +37,16 @@ import {
   Trash2,
   Wrench,
   X,
-  XCircle,
 } from 'lucide-react-native';
 import DraggableFab from '../components/DraggableFab';
 import {GithubIcon, NpmIcon} from '../components/BrandIcons';
-import LogConsole from '../components/LogConsole';
+import PluginTaskCard from '../components/PluginTaskCard';
 import MarkdownView from '../components/MarkdownView';
 import {Colors} from '../theme/colors';
 import {loadAppSettings} from '../services/appSettings';
+import type {usePluginTasks, PluginTaskKind} from '../hooks/usePluginTasks';
 import {canImportLocalAppPlugin, importLocalAppPlugin} from '../services/appPluginImport';
+import {importLocalPluginArchive} from '../services/pluginArchiveImport';
 import {
   APP_PLUGIN_DIR,
   APP_PLUGIN_ROOTFS_DIR,
@@ -71,8 +72,7 @@ import {
   removePlugin,
 } from '../services/pluginService';
 
-type TaskStatus = 'running' | 'completed' | 'failed' | 'cancelled';
-type TaskKind = 'install' | 'remove';
+type TaskKind = PluginTaskKind;
 type TaskOptions = {
   files?: PluginFile[];
   renames?: Record<string, string>;
@@ -88,15 +88,6 @@ type PluginDetailState =
   | {status: 'files'}
   /** 本地探测到的 git 插件：npm 上没有条目，没有 README 可看 */
   | {status: 'local'};
-
-type PluginTask = {
-  name: string;
-  kind: TaskKind;
-  status: TaskStatus;
-  startedAt: number;
-  endedAt?: number;
-  logs: string[];
-};
 
 /** 文件选择弹窗：安装（挑要装的文件）/ 卸载（挑要删的 APP 插件文件） */
 type PickerState = {mode: 'install' | 'remove'; plugin: Plugin};
@@ -129,22 +120,6 @@ const TYPE_META: Record<PluginType, {label: string; Icon: IconComponent; color: 
   npm: {label: 'npm', Icon: Package, color: 'danger'},
   git: {label: 'git', Icon: GitBranch, color: 'purple'},
   app: {label: 'js', Icon: FileCode, color: 'orange'},
-};
-
-const statusStyle = (status: TaskStatus, colors: Colors) => {
-  if (status === 'running') return {label: '运行中', background: colors.accentSoft, color: colors.accent};
-  if (status === 'completed') return {label: '已完成', background: colors.successSoft, color: colors.success};
-  if (status === 'cancelled') return {label: '已终止', background: colors.neutralSoft, color: colors.muted};
-  return {label: '失败', background: colors.neutralSoft, color: colors.danger};
-};
-
-const formatDuration = (milliseconds: number) => {
-  const totalSeconds = Math.max(0, Math.floor(milliseconds / 1000));
-  const hours = Math.floor(totalSeconds / 3600);
-  const minutes = Math.floor((totalSeconds % 3600) / 60);
-  const seconds = totalSeconds % 60;
-  const pad = (value: number) => String(value).padStart(2, '0');
-  return hours > 0 ? `${hours}:${pad(minutes)}:${pad(seconds)}` : `${minutes}:${pad(seconds)}`;
 };
 
 /** 同名文件冲突时换一个不占用的文件名 */
@@ -218,76 +193,7 @@ function FilterChip({
   );
 }
 
-function TaskCard({
-  colors,
-  expanded,
-  onToggle,
-  onStop,
-  task,
-}: {
-  colors: Colors;
-  expanded: boolean;
-  onToggle: () => void;
-  onStop: () => void;
-  task: PluginTask;
-}) {
-  const running = task.status === 'running';
-  const status = statusStyle(task.status, colors);
-  const [now, setNow] = useState(task.startedAt);
-
-  useEffect(() => {
-    if (!running) return undefined;
-    const timer = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(timer);
-  }, [running]);
-
-  const elapsed = (task.endedAt ?? now) - task.startedAt;
-
-  return (
-    <View style={[styles.taskCard, {backgroundColor: colors.neutralSoft, borderColor: colors.border}]}>
-      <View style={styles.taskCardHeader}>
-        <Pressable accessibilityRole='button' onPress={onToggle} style={styles.taskToggleButton}>
-          {task.kind === 'remove' ? (
-            <Trash2 size={15} color={colors.danger} />
-          ) : (
-            <Download size={15} color={colors.accent} />
-          )}
-          <View style={styles.taskInfo}>
-            <Text numberOfLines={1} style={[styles.taskName, {color: colors.text}]}>
-              {task.name}
-            </Text>
-            <View style={styles.taskMeta}>
-              <View style={[styles.statusPill, {backgroundColor: status.background}]}>
-                {running ? <ActivityIndicator color={status.color} size='small' /> : null}
-                <Text style={[styles.statusText, {color: status.color}]}>{status.label}</Text>
-              </View>
-              <Text style={[styles.duration, {color: colors.muted}]}>用时 {formatDuration(elapsed)}</Text>
-            </View>
-          </View>
-          <ChevronDown
-            color={colors.muted}
-            size={16}
-            style={expanded ? styles.chevronExpanded : styles.chevron}
-          />
-        </Pressable>
-        {running ? (
-          <Pressable
-            accessibilityRole='button'
-            onPress={onStop}
-            style={[styles.stopButton, {backgroundColor: colors.danger}]}>
-            <XCircle color='#fff' size={14} />
-            <Text style={styles.stopButtonText}>终止</Text>
-          </Pressable>
-        ) : null}
-      </View>
-      {expanded ? (
-        <LogConsole colors={colors} logs={task.logs} />
-      ) : null}
-    </View>
-  );
-}
-
-export default function PluginsScreen({colors}: {colors: Colors}) {
+export default function PluginsScreen({colors, taskManager}: {colors: Colors; taskManager: ReturnType<typeof usePluginTasks>}) {
   const insets = useSafeAreaInsets();
   const [snapshot, setSnapshot] = useState<PluginSnapshot>({plugins: [], appDirFiles: []});
   const [loading, setLoading] = useState(true);
@@ -296,7 +202,7 @@ export default function PluginsScreen({colors}: {colors: Colors}) {
   const [filter, setFilter] = useState('all');
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [query, setQuery] = useState('');
-  const [tasks, setTasks] = useState<Record<string, PluginTask>>({});
+  const {taskList, running: tasksBusy, runTask: executeTask, stopTask, removeTask, showWarning} = taskManager;
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [tasksOpen, setTasksOpen] = useState(false);
   const [detailPlugin, setDetailPlugin] = useState<Plugin | null>(null);
@@ -305,6 +211,8 @@ export default function PluginsScreen({colors}: {colors: Colors}) {
   const [conflict, setConflict] = useState<ConflictState | null>(null);
   /** 安装方式选择：本地文件 / 直链下载 */
   const [installChoiceOpen, setInstallChoiceOpen] = useState(false);
+  /** 顶部「安装插件」入口：Git 克隆 / 压缩包导入 */
+  const [pluginInstallChoiceOpen, setPluginInstallChoiceOpen] = useState(false);
   /** 市场里没有的 app 插件文件：用户自己填直链和文件名 */
   const [manualOpen, setManualOpen] = useState(false);
   const [manualUrl, setManualUrl] = useState('');
@@ -315,13 +223,14 @@ export default function PluginsScreen({colors}: {colors: Colors}) {
   const [gitUrl, setGitUrl] = useState('');
   const [gitName, setGitName] = useState('');
   const [gitBranch, setGitBranch] = useState('');
+  const [gitCommit, setGitCommit] = useState('');
   const [gitError, setGitError] = useState('');
   /** 居中的表单（直链安装 / git 安装）被输入法顶上来时需要的底部内边距，0 表示键盘没弹 */
   const [manualKeyboardInset, setManualKeyboardInset] = useState(0);
   const [selectedFiles, setSelectedFiles] = useState<Record<string, boolean>>({});
-  const taskCancellers = useRef<Record<string, AbortController>>({});
   const detailRequestId = useRef(0);
   const loadedOnce = useRef(false);
+  const taskWasBusy = useRef(tasksBusy);
   const sheetY = useRef(new Animated.Value(330)).current;
   const manualStep = useRef<React.ComponentRef<typeof View>>(null);
   const gitStep = useRef<React.ComponentRef<typeof View>>(null);
@@ -346,6 +255,12 @@ export default function PluginsScreen({colors}: {colors: Colors}) {
   useEffect(() => {
     load();
   }, [load]);
+
+  // 任务由 App 持有；切页回来后，完成时也要刷新当前页面的安装状态。
+  useEffect(() => {
+    if (taskWasBusy.current && !tasksBusy) load(true);
+    taskWasBusy.current = tasksBusy;
+  }, [load, tasksBusy]);
 
   useEffect(() => {
     if (tasksOpen) {
@@ -462,8 +377,7 @@ export default function PluginsScreen({colors}: {colors: Colors}) {
   if (activeCategory) summaryText = `${activeCategory.label} · ${counts[activeCategory.id] ?? 0} 个插件`;
   if (search) summaryText = `搜索「${query.trim()}」· ${visibleRows.length} 个结果`;
 
-  const runningTaskName = Object.values(tasks).find(task => task.status === 'running')?.name ?? null;
-  const taskList = Object.values(tasks).sort((left, right) => right.startedAt - left.startedAt);
+  const runningTaskName = taskList.find(task => task.status === 'running' || task.status === 'warning')?.name ?? null;
   const detailInstalled = Boolean(detailPlugin?.installed);
   const detailGithubUrl =
     detailState.status === 'ready'
@@ -512,47 +426,23 @@ export default function PluginsScreen({colors}: {colors: Colors}) {
     return appPluginFiles(picker.plugin).map(file => ({label: file.name || file.url, note: file.description ?? ''}));
   }, [dirOwners, picker, removeTargets]);
 
-  const updateTask = useCallback((name: string, updater: (task: PluginTask) => PluginTask) => {
-    setTasks(current => (current[name] ? {...current, [name]: updater(current[name])} : current));
-  }, []);
-
   const runTask = useCallback(
     async (plugin: Plugin, kind: TaskKind, options: TaskOptions = {}) => {
-      const controller = new AbortController();
-      taskCancellers.current[plugin.name] = controller;
-      setExpanded(current => ({...current, [plugin.name]: false}));
-      setTasks(current => ({
-        ...current,
-        [plugin.name]: {name: plugin.name, kind, status: 'running', startedAt: Date.now(), logs: []},
-      }));
       setTasksOpen(true);
-      const onLog = (line: string) => updateTask(plugin.name, task => ({...task, logs: [...task.logs, line]}));
-
-      try {
+      await executeTask(plugin.name, kind, async ({signal, onLog, onWarning}) => {
         if (kind === 'remove') {
-          await removePlugin(plugin, onLog, controller.signal, {appFiles: options.appFiles});
+          await removePlugin(plugin, onLog, signal, {appFiles: options.appFiles});
         } else {
-          await installPlugin(plugin, onLog, controller.signal, {
+          await installPlugin(plugin, onLog, signal, {
             files: options.files,
             renames: options.renames,
             thirdParty: options.thirdParty,
+            onWarning,
           });
         }
-        updateTask(plugin.name, task => ({...task, status: 'completed', endedAt: Date.now()}));
-        await load(true);
-      } catch (caught) {
-        const message = caught instanceof Error ? caught.message : String(caught);
-        updateTask(plugin.name, task => ({
-          ...task,
-          status: controller.signal.aborted ? 'cancelled' : 'failed',
-          endedAt: Date.now(),
-          logs: [...task.logs, message],
-        }));
-      } finally {
-        delete taskCancellers.current[plugin.name];
-      }
+      });
     },
-    [load, updateTask],
+    [executeTask],
   );
 
   const pickFiles = useCallback((plugin: Plugin, mode: 'install' | 'remove') => {
@@ -623,17 +513,18 @@ export default function PluginsScreen({colors}: {colors: Colors}) {
    */
   const submitGitInstall = useCallback(() => {
     try {
-      const plugin = manualGitPlugin(gitUrl, gitName, gitBranch);
+      const plugin = manualGitPlugin(gitUrl, gitName, gitBranch, gitCommit);
       setGitOpen(false);
       setGitUrl('');
       setGitName('');
       setGitBranch('');
+      setGitCommit('');
       setGitError('');
       runTask(plugin, 'install');
     } catch (caught) {
       setGitError(caught instanceof Error ? caught.message : String(caught));
     }
-  }, [gitBranch, gitName, gitUrl, runTask]);
+  }, [gitBranch, gitCommit, gitName, gitUrl, runTask]);
 
   /**
    * 本地文件安装：原生选文件后直接复制进 rootfs 的 app 插件目录，
@@ -642,44 +533,30 @@ export default function PluginsScreen({colors}: {colors: Colors}) {
   const importLocalAppPluginFile = useCallback(async () => {
     setInstallChoiceOpen(false);
     setManualError('');
-    const taskName = '从本地文件安装';
-    const pushTask = (status: TaskStatus, line: string) => {
-      setTasks(current => {
-        const previous = current[taskName];
-        const base: PluginTask = previous ?? {
-          name: taskName,
-          kind: 'install',
-          status: 'running',
-          startedAt: Date.now(),
-          logs: [],
-        };
-        return {
-          ...current,
-          [taskName]: {
-            ...base,
-            status,
-            endedAt: status === 'running' ? undefined : Date.now(),
-            logs: [...base.logs, line],
-          },
-        };
-      });
-      setTasksOpen(true);
-    };
-
-    pushTask('running', '请在系统文件选择器里选一个 .js 文件…');
-    try {
-      const file = await importLocalAppPlugin(APP_PLUGIN_ROOTFS_DIR);
+    setTasksOpen(true);
+    await executeTask('从本地文件安装', 'install', async ({onLog, cancel, signal, setName}) => {
+      onLog('请在系统文件选择器里选一个 .js 文件…');
+      const file = await importLocalAppPlugin(APP_PLUGIN_ROOTFS_DIR, signal);
       if (!file) {
-        pushTask('cancelled', '已取消');
+        onLog('已取消');
+        cancel();
         return;
       }
+      setName(file.name);
       const suffix = /\.js$/i.test(file.name) ? '' : '（注意：Karin 只加载 .js，这个后缀不会生效）';
-      pushTask('completed', `已导入 ${file.name}（${formatFileSize(file.size)}）到 plugins/${APP_PLUGIN_DIR}${suffix}`);
-      await load(true);
-    } catch (caught) {
-      pushTask('failed', caught instanceof Error ? caught.message : String(caught));
-    }
-  }, [load]);
+      onLog(`已导入 ${file.name}（${formatFileSize(file.size)}）到 plugins/${APP_PLUGIN_DIR}${suffix}`);
+    });
+  }, [executeTask]);
+
+  /** 从压缩包导入目录型 Karin 插件。 */
+  const importLocalPluginArchiveFile = useCallback(async () => {
+    setPluginInstallChoiceOpen(false);
+    setTasksOpen(true);
+    await executeTask('从文件导入插件', 'install', async ({onLog, onWarning, signal, cancel, setName}) => {
+      const result = await importLocalPluginArchive({onLog, onWarning, signal, onName: setName});
+      if (!result) cancel();
+    });
+  }, [executeTask]);
 
   const requestRemove = useCallback(
     (plugin: Plugin) => {
@@ -694,10 +571,6 @@ export default function PluginsScreen({colors}: {colors: Colors}) {
     },
     [pickFiles, removeTargets, runTask],
   );
-
-  const stopTask = useCallback((name: string) => {
-    taskCancellers.current[name]?.abort();
-  }, []);
 
   const openDetails = useCallback(async (plugin: Plugin) => {
     const requestId = ++detailRequestId.current;
@@ -787,12 +660,12 @@ export default function PluginsScreen({colors}: {colors: Colors}) {
         <Pressable
           accessibilityRole='button'
           onPress={() => {
-            setGitError('');
-            setGitOpen(true);
+            setPluginInstallChoiceOpen(true);
           }}
-          style={[styles.actionPill, {backgroundColor: colors.surface, borderColor: colors.border}]}>
-          <GitBranch color={colors.accent} size={13} />
-          <Text style={[styles.actionPillText, {color: colors.text}]}>Git 安装</Text>
+          disabled={tasksBusy}
+          style={[styles.actionPill, {backgroundColor: colors.surface, borderColor: colors.border}, tasksBusy && styles.disabledAction]}>
+          <Download color={colors.accent} size={13} />
+          <Text style={[styles.actionPillText, {color: colors.text}]}>安装插件</Text>
         </Pressable>
       </View>
 
@@ -897,7 +770,7 @@ export default function PluginsScreen({colors}: {colors: Colors}) {
             visibleRows.map(plugin => {
               const typeMeta = TYPE_META[plugin.type] ?? TYPE_META.npm;
               const running = runningTaskName === plugin.name;
-              const disabled = runningTaskName !== null;
+              const disabled = tasksBusy;
               const appFileCount = plugin.type === 'app' && !plugin.virtual ? appPluginFiles(plugin).length : 0;
               return (
                 <Pressable
@@ -1012,17 +885,19 @@ export default function PluginsScreen({colors}: {colors: Colors}) {
                 <Text style={{color: colors.accent}}>关闭</Text>
               </Pressable>
             </View>
-            <ScrollView nestedScrollEnabled>
+            <ScrollView nestedScrollEnabled keyboardShouldPersistTaps='handled'>
               {taskList.length === 0 ? (
                 <Text style={[styles.empty, {color: colors.muted}]}>暂无任务</Text>
               ) : (
                 taskList.map(task => (
-                  <TaskCard
+                  <PluginTaskCard
                     colors={colors}
-                    expanded={Boolean(expanded[task.name])}
-                    key={`${task.name}-${task.startedAt}`}
-                    onToggle={() => setExpanded(current => ({...current, [task.name]: !current[task.name]}))}
-                    onStop={() => stopTask(task.name)}
+                    expanded={Boolean(expanded[task.id])}
+                    key={task.id}
+                    onToggle={() => setExpanded(current => ({...current, [task.id]: !current[task.id]}))}
+                    onStop={() => stopTask(task.id)}
+                    onDelete={() => removeTask(task.id)}
+                    onWarning={() => showWarning(task.id)}
                     task={task}
                   />
                 ))
@@ -1034,79 +909,137 @@ export default function PluginsScreen({colors}: {colors: Colors}) {
 
       <Modal
         animationType='fade'
+        onRequestClose={() => setPluginInstallChoiceOpen(false)}
+        transparent
+        visible={pluginInstallChoiceOpen}>
+        <View style={styles.overlay}>
+          <Pressable onPress={() => setPluginInstallChoiceOpen(false)} style={styles.overlayBackdrop} />
+          <View pointerEvents='box-none' style={[styles.detailStep, styles.detailStepBottom]}>
+            <View style={[styles.conflictSheet, {backgroundColor: colors.surface}]}>
+              <Text style={[styles.name, {color: colors.text}]}>安装插件</Text>
+              <Text style={[styles.conflictBody, {color: colors.muted}]}>
+                从 Git 克隆，或导入 ZIP 插件压缩包。
+              </Text>
+              <Pressable
+                accessibilityRole='button'
+                onPress={() => {
+                  setPluginInstallChoiceOpen(false);
+                  setGitError('');
+                  setGitOpen(true);
+                }}
+                style={[styles.choiceButton, {borderColor: colors.border}]}>
+                <GitBranch color={colors.accent} size={17} />
+                <View style={styles.choiceCopy}>
+                  <Text style={[styles.choiceTitle, {color: colors.text}]}>从 Git 克隆</Text>
+                  <Text style={[styles.choiceNote, {color: colors.muted}]}>填写仓库地址，可指定分支和 commit</Text>
+                </View>
+              </Pressable>
+              <Pressable
+                accessibilityRole='button'
+                onPress={importLocalPluginArchiveFile}
+                style={[styles.choiceButton, {borderColor: colors.border}]}>
+                <FileUp color={colors.accent} size={17} />
+                <View style={styles.choiceCopy}>
+                  <Text style={[styles.choiceTitle, {color: colors.text}]}>从文件导入</Text>
+                  <Text style={[styles.choiceNote, {color: colors.muted}]}>ZIP 根目录须有 package.json，支持 karin-plugin-* 和 @scope/karin-plugin-*</Text>
+                </View>
+              </Pressable>
+              <View style={styles.conflictActions}>
+                <Pressable onPress={() => setPluginInstallChoiceOpen(false)} style={[styles.conflictButton, {borderColor: colors.border}]}>
+                  <Text style={[styles.conflictButtonText, {color: colors.muted}]}>取消</Text>
+                </Pressable>
+              </View>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal
+        animationType='fade'
         onRequestClose={() => setGitOpen(false)}
         transparent
         visible={gitOpen}>
         <View style={styles.overlay}>
           <Pressable onPress={() => setGitOpen(false)} style={styles.overlayBackdrop} />
-          <View ref={gitStep} style={[styles.detailStep, styles.detailStepCenter, {paddingBottom: manualKeyboardInset}]}>
-            <View style={[styles.manualSheet, {backgroundColor: colors.surface, borderColor: colors.border}]}>
-              <Text style={[styles.name, {color: colors.text}]}>从 Git 仓库安装插件</Text>
-              <Text style={[styles.filePickerHint, {color: colors.muted}]}>
-                {`填仓库地址，clone 到 plugins/<目录名>，装完按未知来源列出；目录已存在时走 fetch + reset --hard 覆盖安装，会丢弃仓库里的本地改动。`}
-              </Text>
-              <TextInput
-                autoCapitalize='none'
-                autoCorrect={false}
-                onChangeText={text => {
-                  setGitUrl(text);
-                  setGitError('');
-                }}
-                placeholder='https://github.com/xxx/karin-plugin-xxx'
-                placeholderTextColor={colors.muted}
-                style={[styles.manualInput, {borderColor: colors.border, color: colors.text}]}
-                value={gitUrl}
-              />
-              <TextInput
-                autoCapitalize='none'
-                autoCorrect={false}
-                onChangeText={setGitBranch}
-                placeholder='分支（可选，默认仓库默认分支）'
-                placeholderTextColor={colors.muted}
-                style={[styles.manualInput, {borderColor: colors.border, color: colors.text}]}
-                value={gitBranch}
-              />
-              <TextInput
-                autoCapitalize='none'
-                autoCorrect={false}
-                onChangeText={text => {
-                  setGitName(text);
-                  setGitError('');
-                }}
-                placeholder={`目录名（可选，默认 ${gitPluginNameFromUrl(gitUrl) || '仓库名'}）`}
-                placeholderTextColor={colors.muted}
-                style={[styles.manualInput, {borderColor: colors.border, color: colors.text}]}
-                value={gitName}
-              />
-              {gitError ? (
-                <Text style={[styles.manualNote, {color: colors.danger}]}>{gitError}</Text>
-              ) : gitTarget ? (
-                <Text style={[styles.manualNote, {color: !gitNameValid || gitConflict ? colors.danger : colors.muted}]}>
-                  {!gitNameValid
-                    ? `目录名不合法：${gitTarget}`
-                    : gitConflict
-                      ? `已有同名插件 ${gitTarget}，安装会覆盖`
-                      : `会装到 ${pluginInstallPath({name: gitTarget, type: 'git'})}`}
+          <View pointerEvents='box-none' ref={gitStep} style={[styles.detailStep, styles.detailStepCenter, {paddingBottom: manualKeyboardInset}]}>
+            <ScrollView style={styles.gitFormScroll} keyboardShouldPersistTaps='handled'>
+              <View style={[styles.manualSheet, {backgroundColor: colors.surface, borderColor: colors.border}]}>
+                <Text style={[styles.name, {color: colors.text}]}>从 Git 仓库安装插件</Text>
+                <Text style={[styles.filePickerHint, {color: colors.muted}]}>
+                  {`填仓库地址，clone 到 plugins/<目录名>，装完按未知来源列出；目录已有内容时，点击任务的「警告」标签选择是否覆盖。`}
                 </Text>
-              ) : null}
-              <View style={styles.conflictActions}>
-                <Pressable onPress={() => setGitOpen(false)} style={[styles.conflictButton, {borderColor: colors.border}]}>
-                  <Text style={[styles.conflictButtonText, {color: colors.muted}]}>取消</Text>
-                </Pressable>
-                <Pressable
-                  disabled={!gitUrl.trim() || !gitNameValid}
-                  onPress={submitGitInstall}
-                  style={[
-                    styles.conflictButton,
-                    {backgroundColor: colors.accent, borderColor: colors.accent},
-                    (!gitUrl.trim() || !gitNameValid) && styles.disabledAction,
-                  ]}>
-                  <Text style={[styles.conflictButtonText, styles.conflictPrimaryText]}>
-                    {gitConflict ? '覆盖安装' : '安装'}
+                <TextInput
+                  autoCapitalize='none'
+                  autoCorrect={false}
+                  onChangeText={text => {
+                    setGitUrl(text);
+                    setGitError('');
+                  }}
+                  placeholder='https://github.com/xxx/karin-plugin-xxx'
+                  placeholderTextColor={colors.muted}
+                  style={[styles.manualInput, {borderColor: colors.border, color: colors.text}]}
+                  value={gitUrl}
+                />
+                <TextInput
+                  autoCapitalize='none'
+                  autoCorrect={false}
+                  onChangeText={setGitBranch}
+                  placeholder='分支（可选，默认仓库默认分支）'
+                  placeholderTextColor={colors.muted}
+                  style={[styles.manualInput, {borderColor: colors.border, color: colors.text}]}
+                  value={gitBranch}
+                />
+                <TextInput
+                  autoCapitalize='none'
+                  autoCorrect={false}
+                  onChangeText={setGitCommit}
+                  placeholder='commit（可选，提交哈希或 ref）'
+                  placeholderTextColor={colors.muted}
+                  style={[styles.manualInput, {borderColor: colors.border, color: colors.text}]}
+                  value={gitCommit}
+                />
+                <TextInput
+                  autoCapitalize='none'
+                  autoCorrect={false}
+                  onChangeText={text => {
+                    setGitName(text);
+                    setGitError('');
+                  }}
+                  placeholder={`目录名（可选，默认 ${gitPluginNameFromUrl(gitUrl) || '仓库名'}）`}
+                  placeholderTextColor={colors.muted}
+                  style={[styles.manualInput, {borderColor: colors.border, color: colors.text}]}
+                  value={gitName}
+                />
+                {gitError ? (
+                  <Text style={[styles.manualNote, {color: colors.danger}]}>{gitError}</Text>
+                ) : gitTarget ? (
+                  <Text style={[styles.manualNote, {color: !gitNameValid || gitConflict ? colors.danger : colors.muted}]}>
+                    {!gitNameValid
+                      ? `目录名不合法：${gitTarget}`
+                      : gitConflict
+                        ? `已有同名插件 ${gitTarget}，任务将等待确认覆盖`
+                        : `会装到 ${pluginInstallPath({name: gitTarget, type: 'git'})}`}
                   </Text>
-                </Pressable>
+                ) : null}
+                <View style={styles.conflictActions}>
+                  <Pressable onPress={() => setGitOpen(false)} style={[styles.conflictButton, {borderColor: colors.border}]}>
+                    <Text style={[styles.conflictButtonText, {color: colors.muted}]}>取消</Text>
+                  </Pressable>
+                  <Pressable
+                    disabled={!gitUrl.trim() || !gitNameValid}
+                    onPress={submitGitInstall}
+                    style={[
+                      styles.conflictButton,
+                      {backgroundColor: colors.accent, borderColor: colors.accent},
+                      (!gitUrl.trim() || !gitNameValid) && styles.disabledAction,
+                    ]}>
+                    <Text style={[styles.conflictButtonText, styles.conflictPrimaryText]}>
+                      安装
+                    </Text>
+                  </Pressable>
+                </View>
               </View>
-            </View>
+              </ScrollView>
           </View>
         </View>
       </Modal>
@@ -1523,7 +1456,7 @@ const styles = StyleSheet.create({
   summaryRow: {height: 38, paddingHorizontal: 14, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between'},
   summary: {fontSize: 11, fontWeight: '600'},
   refreshButton: {width: 30, height: 30, borderRadius: 15, borderWidth: 1, alignItems: 'center', justifyContent: 'center'},
-  /** Git 安装入口 */
+  /** Git / ZIP 安装入口 */
   actionRow: {flexDirection: 'row', gap: 8, paddingHorizontal: 12, paddingBottom: 8},
   actionPill: {flexDirection: 'row', alignItems: 'center', gap: 5, height: 32, borderWidth: 1, borderRadius: 8, paddingHorizontal: 10},
   actionPillText: {fontSize: 11, fontWeight: '700'},
@@ -1597,19 +1530,6 @@ const styles = StyleSheet.create({
   bottomSheet: {height: 360, width: '100%', padding: 16, borderTopLeftRadius: 16, borderTopRightRadius: 16},
   sheetHandle: {alignSelf: 'center', width: 36, height: 4, borderRadius: 2, backgroundColor: '#888', marginBottom: 10},
   taskHeader: {flexDirection: 'row', justifyContent: 'space-between', marginBottom: 10},
-  taskCard: {borderWidth: 1, borderRadius: 10, padding: 10, marginBottom: 8},
-  taskCardHeader: {flexDirection: 'row', alignItems: 'center', gap: 8},
-  taskToggleButton: {flex: 1, flexDirection: 'row', alignItems: 'center', gap: 8},
-  taskInfo: {flex: 1, gap: 4},
-  taskName: {fontSize: 13, fontWeight: '700'},
-  taskMeta: {flexDirection: 'row', alignItems: 'center', gap: 6},
-  statusPill: {minWidth: 58, height: 20, borderRadius: 10, paddingHorizontal: 6, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 3},
-  statusText: {fontSize: 10, fontWeight: '700'},
-  duration: {fontSize: 10},
-  stopButton: {height: 30, borderRadius: 8, paddingHorizontal: 9, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 4},
-  stopButtonText: {color: '#fff', fontSize: 11, fontWeight: '700'},
-  chevron: {transform: [{rotate: '0deg'}]},
-  chevronExpanded: {transform: [{rotate: '180deg'}]},
   detailSheet: {height: '78%', width: '100%', padding: 16, borderTopLeftRadius: 16, borderTopRightRadius: 16},
   filePickerSheet: {width: '100%', padding: 16, borderTopLeftRadius: 16, borderTopRightRadius: 16},
   filePickerHint: {fontSize: 11, marginTop: 4, marginBottom: 4},
@@ -1647,6 +1567,7 @@ const styles = StyleSheet.create({
   /** 直链表单居中；键盘弹出时靠 render 里的 paddingBottom 把内容整体往上让 */
   detailStepCenter: {justifyContent: 'center', paddingHorizontal: 16, paddingVertical: 40},
   manualSheet: {width: '100%', padding: 16, borderWidth: 1, borderRadius: 14},
+  gitFormScroll: {width: '100%', flexGrow: 0, maxHeight: '100%'},
   manualInput: {borderWidth: 1, borderRadius: 10, paddingHorizontal: 10, paddingVertical: 8, fontSize: 12, marginTop: 8},
   manualNote: {fontSize: 11, lineHeight: 16, marginTop: 8},
   /** 安装方式选择：本地文件 / 直链下载 */

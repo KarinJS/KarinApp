@@ -116,7 +116,7 @@ async function prepareKarin(installedKarin: string, onPhase: PhaseHandler, onLog
 
 const KARIN_VERSION_PATTERN = /^\d+\.\d+\.\d+(?:-[\w.]+)?$/;
 
-/** 从 npm registry 查询 node-karin 的全部发布版本，按从新到旧排序（走 packageVersions 的 15 分钟缓存）。 */
+/** 从 npm registry 查询 node-karin 的全部发布版本，按从新到旧排序（走 packageVersions 的 1 小时缓存）。 */
 export async function fetchKarinVersions(): Promise<string[]> {
   return fetchPackageVersions('node-karin');
 }

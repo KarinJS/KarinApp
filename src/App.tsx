@@ -11,6 +11,7 @@ import VersionSheet from './components/VersionSheet';
 import {useContainerStatus} from './hooks/useContainerStatus';
 import {useKarinRuntime} from './hooks/useKarinRuntime';
 import {useToast} from './hooks/useToast';
+import {usePluginTasks} from './hooks/usePluginTasks';
 import DashboardScreen from './screens/DashboardScreen';
 import FileManagerScreen from './screens/FileManagerScreen';
 import PluginsScreen from './screens/PluginsScreen';
@@ -40,6 +41,7 @@ const INITIAL_STARTUP: StartupProgress = {
 export default function App() {
   const {colors, dark} = useAppColors();
   const {notice, showNotice} = useToast();
+  const pluginTasks = usePluginTasks();
   const {containerState, setContainerState} = useContainerStatus();
   const {
     running: karinRunning,
@@ -337,7 +339,7 @@ export default function App() {
                   openBackup={openBackup}
                 />
               ) : (
-                <PluginsScreen colors={colors} />
+                <PluginsScreen colors={colors} taskManager={pluginTasks} />
               )}
             </View>
 

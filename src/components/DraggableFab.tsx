@@ -1,6 +1,6 @@
 import React, {useEffect, useMemo, useRef, useState} from 'react';
 import {Animated, GestureResponderEvent, LayoutChangeEvent, PanResponder, PanResponderGestureState, StyleSheet, Text, View} from 'react-native';
-import {Package} from 'lucide-react-native';
+import {Download} from 'lucide-react-native';
 import {Colors} from '../theme/colors';
 
 type DraggableFabProps = {
@@ -105,7 +105,7 @@ export default function DraggableFab({badgeCount, colors, onPress}: DraggableFab
   return (
     <View onLayout={handleLayout} pointerEvents="box-none" style={styles.layer}>
       <Animated.View
-        accessibilityLabel="安装任务"
+        accessibilityLabel={`插件任务，共 ${badgeCount} 个`}
         accessibilityRole="button"
         onAccessibilityTap={onPress}
         style={[
@@ -117,8 +117,8 @@ export default function DraggableFab({badgeCount, colors, onPress}: DraggableFab
           pressed ? styles.fabPressed : null,
         ]}
         {...panResponder.panHandlers}>
-        <Package color="#fff" size={20} />
-        {badgeCount > 0 ? <Text style={styles.badge}>{badgeCount}</Text> : null}
+        <Download color="#fff" size={20} />
+        {badgeCount > 0 ? <Text style={styles.badge}>{badgeCount > 99 ? '99+' : badgeCount}</Text> : null}
       </Animated.View>
     </View>
   );
@@ -145,6 +145,8 @@ const styles = StyleSheet.create({
     backgroundColor: '#dc2626',
     borderRadius: 10,
     minWidth: 18,
+    paddingHorizontal: 4,
+    lineHeight: 18,
     textAlign: 'center',
     fontSize: 11,
   },

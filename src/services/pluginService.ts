@@ -8,6 +8,8 @@ type PluginRepository = {
   type?: string;
   url?: string;
   branch?: string;
+  /** 克隆或更新后固定到指定提交。 */
+  commit?: string;
 };
 
 export type PluginFile = {
@@ -65,6 +67,8 @@ type InstallOptions = {
   renames?: Record<string, string>;
   /** 未知来源文件（手动导入的）：不写归属记账，卸载列表里永远显示为未知来源 */
   thirdParty?: boolean;
+  /** git 目标目录已有内容时请求用户确认覆盖。 */
+  onWarning?: (warning: {title?: string; message: string; confirmLabel?: string; cancelLabel?: string}) => Promise<boolean>;
 };
 
 type RemoveOptions = {
@@ -269,16 +273,29 @@ export const gitPluginNameFromUrl = (url: string) => {
 };
 
 /**
- * 手动安装 git 插件：市场列表里没有的仓库，用户自己填地址（可选分支、目录名）。
+ * 手动安装 git 插件：市场列表里没有的仓库，用户自己填地址（可选分支、commit、目录名）。
  * 安装 / 更新 / 卸载都复用市场那套 git 流程，这里只现造一个 git 条目。
  */
-export const manualGitPlugin = (url: string, name = '', branch = '') => {
+/** 只接受 Git 分支/ref 名称或提交哈希，不接受选项和 revision 表达式。 */
+const validateGitRef = (value: string, label: string) => {
+  if (!value) return;
+  const invalid = value.startsWith('-') || value.startsWith('/') || value.endsWith('/') ||
+    value.endsWith('.') || value.includes('..') || value.includes('@{') ||
+    value.includes('//') || /[\s~^:?*[\\]/.test(value) ||
+    Array.from(value).some(character => character.charCodeAt(0) < 32 || character.charCodeAt(0) === 127) ||
+    value.split('/').some(part => part.startsWith('.') || part.endsWith('.lock'));
+  if (invalid) throw new Error(`${label} 不合法：${value}`);
+};
+
+export const manualGitPlugin = (url: string, name = '', branch = '', commit = '') => {
   const trimmed = url.trim();
   if (!/^(?:https?:\/\/|git:\/\/|ssh:\/\/|git@)/i.test(trimmed)) {
     throw new Error('请填写 git 仓库地址（https://… 或 git@…）');
   }
   const wanted = (name.trim() || gitPluginNameFromUrl(trimmed)).trim();
   if (!wanted) throw new Error('请填写插件目录名，例如 karin-plugin-xxx');
+  validateGitRef(branch.trim(), '分支');
+  validateGitRef(commit.trim(), 'commit');
   /** karin-plugin-example 是 app 插件共享目录，git 覆盖安装会 rm -rf 掉里面的文件 */
   if (wanted === APP_PLUGIN_DIR) throw new Error(`${APP_PLUGIN_DIR} 是 APP 插件目录，不能作为 git 插件目录名`);
   const plugin: Plugin = {
@@ -286,7 +303,12 @@ export const manualGitPlugin = (url: string, name = '', branch = '') => {
     type: 'git',
     description: '手动安装的 Git 插件',
     homepage: githubUrlFrom(trimmed),
-    repo: [{type: 'git', url: trimmed, branch: branch.trim() || undefined}],
+    repo: [{
+      type: 'git',
+      url: trimmed,
+      branch: branch.trim() || undefined,
+      commit: commit.trim() || undefined,
+    }],
   };
   /** 复用市场那套名称校验，名字不合法直接抛错 */
   pluginPath(plugin);
@@ -596,13 +618,26 @@ const gitInstallCommand = (plugin: Plugin) => {
   if (!repository?.url) throw new Error('Git 插件缺少可用仓库地址');
   const path = pluginPath(plugin);
   const branch = repository.branch?.trim();
+  const commit = repository.commit?.trim();
+  validateGitRef(branch ?? '', '分支');
+  validateGitRef(commit ?? '', 'commit');
   const branchArgument = branch ? ` --branch ${shellQuote(branch)}` : '';
   /** 用户填了 GitHub 加速前缀时，clone/fetch 都走加速地址 */
   const repositoryUrl = proxiedUrl(repository.url);
+  const git = `git -C ${shellQuote(path)}`;
+  const shortCommit = commit && /^[0-9a-f]{4,39}$/i.test(commit);
+  // 服务端通常不能解析短哈希：先补全各分支的历史，再让 Git 在本地解析；歧义哈希会报错。
+  const fetchHistory = `if test "$(${git} rev-parse --is-shallow-repository)" = true; then ${git} fetch --unshallow --tags -- origin '+refs/heads/*:refs/remotes/origin/*'; else ${git} fetch --tags -- origin '+refs/heads/*:refs/remotes/origin/*'; fi`;
+  const checkoutCommand = shortCommit
+    ? `(${fetchHistory}) && karin_commit=$(${git} rev-parse --verify --end-of-options ${shellQuote(`${commit}^{commit}`)}) && ${git} reset --hard "$karin_commit"`
+    : `${git} fetch --depth 1 -- origin ${shellQuote(commit || branch || 'HEAD')} && ${git} reset --hard FETCH_HEAD`;
+  const cloneCommand = commit
+    ? `git clone --no-checkout --depth 1${branchArgument} -- ${shellQuote(repositoryUrl)} ${shellQuote(path)} && ${checkoutCommand}`
+    : `git clone --depth 1${branchArgument} -- ${shellQuote(repositoryUrl)} ${shellQuote(path)}`;
   return [
     `command -v git >/dev/null 2>&1 || (apt-get update && apt-get install -y git)`,
     `mkdir -p ${shellQuote(`${KARIN_DIR}/plugins`)}`,
-    `if test -d ${shellQuote(`${path}/.git`)}; then git -C ${shellQuote(path)} remote set-url origin ${shellQuote(repositoryUrl)} && git -C ${shellQuote(path)} fetch --depth 1 origin ${shellQuote(branch ?? 'HEAD')} && git -C ${shellQuote(path)} reset --hard FETCH_HEAD; else rm -rf ${shellQuote(path)} && git clone --depth 1${branchArgument} ${shellQuote(repositoryUrl)} ${shellQuote(path)}; fi`,
+    `if test -d ${shellQuote(`${path}/.git`)}; then git -C ${shellQuote(path)} remote set-url origin ${shellQuote(repositoryUrl)} && ${checkoutCommand}; else rm -rf ${shellQuote(path)} && ${cloneCommand}; fi`,
     `if test -f ${shellQuote(`${path}/package.json`)}; then cd ${shellQuote(path)} && pnpm i; fi`,
   ].join(' && ');
 };
@@ -661,7 +696,27 @@ export const installPlugin = (
     });
   }
   const command = plugin.type === 'git' ? gitInstallCommand(plugin) : npmInstallCommand(plugin);
-  return executeStreaming(command, onLog, 5 * 60 * 1000, signal);
+  const run = async () => {
+    if (plugin.type === 'git') {
+      const path = pluginPath(plugin);
+      // 不掩盖读取失败；只有已确认不存在或为空时才可直接安装。
+      const probe = `if test -d ${shellQuote(path)}; then find ${shellQuote(path)} -mindepth 1 -maxdepth 1 -printf 'conflict\\n' -quit; elif test -e ${shellQuote(path)} || test -L ${shellQuote(path)}; then printf 'conflict\\n'; fi`;
+      const result = await executeStreaming(probe, () => {}, 10_000, signal);
+      if (result.trim() === 'conflict') {
+        if (!options.onWarning) throw new Error(`${plugin.name} 已存在且不为空，请确认覆盖后重试`);
+        const accepted = await options.onWarning({
+          title: '插件已存在',
+          message: `${plugin.name} 已存在且不为空，是否覆盖？`,
+          confirmLabel: '是',
+          cancelLabel: '否',
+        });
+        if (!accepted) throw new Error('用户取消覆盖');
+      }
+    }
+    if (signal?.aborted) throw new Error('任务已终止');
+    return executeStreaming(command, onLog, 5 * 60 * 1000, signal);
+  };
+  return run();
 };
 
 export const removePlugin = (
@@ -688,8 +743,14 @@ export type KarinDependency = {
   name: string;
   /** package.json 里声明的版本范围 */
   spec: string;
+  /** node_modules 中当前实际安装的版本；读取失败时为空 */
+  installedVersion?: string;
+  /** npm 缓存中解析出的最新稳定版本 */
+  latestVersion?: string;
   /** devDependencies 里的依赖 */
   dev?: boolean;
+  /** package.json 中实际所属的依赖分组 */
+  location?: 'dependencies' | 'devDependencies' | 'optionalDependencies';
   /** 是不是按 Karin 插件命名（决定它会不会出现在插件列表里） */
   plugin: boolean;
   /** Karin 运行本体 */
@@ -710,24 +771,42 @@ export const listKarinDependencies = async (): Promise<KarinDependency[]> => {
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return [];
   const source = parsed as Record<string, unknown>;
   const merged = new Map<string, KarinDependency>();
-  const collect = (field: string, dev: boolean) => {
+  const collect = (field: 'dependencies' | 'devDependencies' | 'optionalDependencies') => {
     const entries = source[field];
     if (!entries || typeof entries !== 'object' || Array.isArray(entries)) return;
     Object.entries(entries as Record<string, unknown>).forEach(([name, spec]) => {
-      if (dev && merged.has(name)) return;
+      if (merged.has(name)) return;
       merged.set(name, {
         name,
         spec: typeof spec === 'string' ? spec : '',
-        dev: dev || undefined,
+        dev: field === 'devDependencies' || undefined,
+        location: field,
         plugin: isPluginPackageName(name),
         core: isKarinCorePackage(name),
       });
     });
   };
-  collect('dependencies', false);
-  collect('devDependencies', true);
+  collect('dependencies');
+  collect('devDependencies');
+  collect('optionalDependencies');
+  const dependencies = [...merged.values()];
+  // pnpm 在项目 node_modules 中为依赖创建软链接，直接读取其 package.json
+  // 即可得到实际安装版本。单个包缺失时保留依赖项，其余包继续展示。
+  await Promise.all(dependencies.map(async dependency => {
+    const packageOutput = await executeAndCollect(
+      `cat ${shellQuote(`${KARIN_DIR}/node_modules/${dependency.name}/package.json`)} 2>/dev/null || true`,
+    );
+    try {
+      const packageJson = JSON.parse(packageOutput.trim() || '{}') as {version?: unknown};
+      if (typeof packageJson.version === 'string' && packageJson.version.trim()) {
+        dependency.installedVersion = packageJson.version.trim();
+      }
+    } catch {
+      // node_modules 中没有可读取的 package.json 时，保留 undefined。
+    }
+  }));
   /** Karin 运行本体的版本必须最先看到，剩下的按字母序排 */
-  return [...merged.values()].sort((left, right) => {
+  return dependencies.sort((left, right) => {
     if (left.core !== right.core) return left.core ? -1 : 1;
     return left.name.localeCompare(right.name);
   });
@@ -750,12 +829,25 @@ export const installKarinDependencies = async (
   names: string[],
   onLog: (line: string) => void,
   signal?: AbortSignal,
-  options: {dev?: boolean} = {},
+  options: {dev?: boolean; location?: 'dependencies' | 'devDependencies' | 'optionalDependencies'} = {},
 ) => {
   if (!names.length) throw new Error('请填写要安装的依赖');
   /** devDependencies 必须带 -D，否则 pnpm 会把包挪进 dependencies */
-  const flag = options.dev ? ' -D' : '';
+  const flag = options.location === 'devDependencies' || options.dev
+    ? ' -D'
+    : options.location === 'optionalDependencies'
+      ? ' -O'
+      : '';
   return executeStreaming(pnpmCommand(`i${flag} ${names.map(shellQuote).join(' ')}`), onLog, 5 * 60 * 1000, signal);
+};
+
+/** 删除现有依赖目录和锁文件后，按 package.json 重新安装全部依赖。 */
+export const reinstallKarinDependencies = async (
+  onLog: (line: string) => void,
+  signal?: AbortSignal,
+) => {
+  const command = `cd ${KARIN_DIR} && rm -rf -- node_modules pnpm-lock.yaml && if test -f pnpm-workspace.yaml; then pnpm -w i; else pnpm i; fi`;
+  return executeStreaming(command, onLog, 10 * 60 * 1000, signal);
 };
 
 /** 卸载依赖：pnpm remove <name>；Karin 本体不给删 */
@@ -776,6 +868,7 @@ export type KarinDependencyChange = {
   /** 目标版本 / 范围，写进 package.json 的 dependencies 值 */
   spec: string;
   dev?: boolean;
+  location?: 'dependencies' | 'devDependencies' | 'optionalDependencies';
 };
 
 /**
@@ -791,8 +884,9 @@ export const updateKarinDependencySpecs = async (
   const valid = changes.filter(change => change.name && change.spec);
   if (!valid.length) throw new Error('没有要修改的依赖');
   const groups = [
-    {dev: false, changes: valid.filter(change => !change.dev)},
-    {dev: true, changes: valid.filter(change => change.dev)},
+    {location: 'dependencies' as const, changes: valid.filter(change => (change.location ?? (change.dev ? 'devDependencies' : 'dependencies')) === 'dependencies')},
+    {location: 'devDependencies' as const, changes: valid.filter(change => (change.location ?? (change.dev ? 'devDependencies' : 'dependencies')) === 'devDependencies')},
+    {location: 'optionalDependencies' as const, changes: valid.filter(change => change.location === 'optionalDependencies')},
   ];
   for (const group of groups) {
     if (!group.changes.length) continue;
@@ -800,7 +894,7 @@ export const updateKarinDependencySpecs = async (
       group.changes.map(change => `${change.name}@${change.spec}`),
       onLog,
       signal,
-      {dev: group.dev},
+      {location: group.location},
     );
   }
 };
