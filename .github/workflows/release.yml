@@ -65,7 +65,7 @@ jobs:
         with:
           version: 9.15.9
 
-      - name: Setup Java
+      - name: 设置 Java
         uses: actions/setup-java@v4
         with:
           distribution: temurin
