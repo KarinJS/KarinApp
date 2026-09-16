@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.2.5](https://github.com/KarinJS/KarinApp/compare/v1.2.4...v1.2.5) (2026-09-16)
+
+
+### Bug Fixes
+
+* 优化rootfs大小 ([1f400e6](https://github.com/KarinJS/KarinApp/commit/1f400e6c35d5a97ee15a752db6522e85230b13c7))
+* 优化依赖管理 ([d5531cb](https://github.com/KarinJS/KarinApp/commit/d5531cb8f49a83b2f9119c0d884e67e5cb424451))
+* 优化插件管理 ([ef70157](https://github.com/KarinJS/KarinApp/commit/ef70157c04b1cc14ce2abae989e0daca73834002))
+* 修复内存占用统计错误的问题 ([efd6c59](https://github.com/KarinJS/KarinApp/commit/efd6c590aabdac0a4efda2ca140523fdefad167b))
+* 修复备份失败的问题 ([eb1006c](https://github.com/KarinJS/KarinApp/commit/eb1006c2808b112c8306ac7cb37ebe75a64e26c0))
+* 修复手动安装插件不识别的问题 ([5e3511d](https://github.com/KarinJS/KarinApp/commit/5e3511d7de5ffb15d7efe8861162a75c601c79ef))
+* 修改启动按钮位置 ([97d282c](https://github.com/KarinJS/KarinApp/commit/97d282c4a572fe7a36b46e2b5e7c284647fc1ef3))
+
 ## [1.2.4](https://github.com/KarinJS/KarinApp/compare/v1.2.3...v1.2.4) (2026-09-14)
 
 
