@@ -1,6 +1,6 @@
 import React, {useEffect, useMemo, useRef, useState} from 'react';
 import {ActivityIndicator, Animated, PanResponder, Pressable, StyleSheet, Text, View} from 'react-native';
-import {ChevronDown, Download, Trash2, XCircle, AlertTriangle} from 'lucide-react-native';
+import {ArrowLeftRight, ChevronDown, Download, Trash2, XCircle, AlertTriangle} from 'lucide-react-native';
 import LogConsole from './LogConsole';
 import {Colors} from '../theme/colors';
 import type {PluginTask, PluginTaskStatus} from '../hooks/usePluginTasks';
@@ -84,6 +84,8 @@ export default function PluginTaskCard({colors, expanded, onToggle, onStop, onDe
       <View style={styles.header}>
         {task.kind === 'remove' ? (
           <Trash2 size={15} color={colors.danger} />
+        ) : task.kind === 'version' ? (
+          <ArrowLeftRight size={15} color={colors.accent} />
         ) : (
           <Download size={15} color={colors.accent} />
         )}
@@ -114,6 +116,8 @@ export default function PluginTaskCard({colors, expanded, onToggle, onStop, onDe
                 {task.cancelling ? '终止中' : status.label}
               </Text>
             </Pressable>
+            {task.target ? <Text style={[styles.duration, {color: colors.muted}]}>{task.target.label}</Text> : null}
+            {task.kind === 'version' ? <Text style={[styles.duration, {color: colors.muted}]}>切换版本</Text> : null}
             <Text style={[styles.duration, {color: colors.muted}]}>用时 {formatDuration(elapsed)}</Text>
           </View>
         </View>
@@ -150,7 +154,7 @@ const styles = StyleSheet.create({
   info: {flex: 1, gap: 4},
   titleRow: {flexDirection: 'row', alignItems: 'center', gap: 6, minHeight: 25},
   name: {flex: 1, fontSize: 13, fontWeight: '700'},
-  meta: {flexDirection: 'row', alignItems: 'center', gap: 6},
+  meta: {flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: 6},
   pill: {minWidth: 58, height: 24, borderRadius: 12, paddingHorizontal: 6, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 3},
   status: {fontSize: 10, fontWeight: '700'},
   duration: {fontSize: 10},

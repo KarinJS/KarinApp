@@ -1,7 +1,8 @@
 import {useCallback, useMemo, useRef, useState} from 'react';
 
 export type PluginTaskStatus = 'running' | 'warning' | 'completed' | 'failed' | 'cancelled';
-export type PluginTaskKind = 'install' | 'remove';
+export type PluginTaskKind = 'install' | 'remove' | 'version';
+export type PluginTaskTarget = {key: string; label: string; type?: 'npm' | 'git' | 'app'};
 export type PluginTaskWarning = {
   title?: string;
   message: string;
@@ -11,6 +12,8 @@ export type PluginTaskWarning = {
 export type PluginTask = {
   id: string;
   name: string;
+  /** 按安装位置关联条目，同名 npm 与目录插件各自显示任务状态。 */
+  target?: PluginTaskTarget;
   kind: PluginTaskKind;
   status: PluginTaskStatus;
   startedAt: number;
@@ -27,6 +30,7 @@ export type PluginTaskRunner = {
   onWarning: (warning: string | PluginTaskWarning) => Promise<boolean>;
   cancel: () => void;
   setName: (name: string) => void;
+  setTarget: (target: PluginTaskTarget) => void;
 };
 
 type PendingWarning = {
@@ -44,6 +48,7 @@ export type PluginTaskWarningDialog = {
 const addLog = (logs: string[], line: string) => [...logs, line].slice(-2000);
 let nextTaskNumber = 0;
 const taskId = () => `plugin-task-${Date.now()}-${++nextTaskNumber}`;
+const isNpmTarget = (target?: PluginTaskTarget) => target?.type === 'npm' || (!target?.type && target?.key.startsWith('npm:') === true);
 
 /**
  * 每次安装都有独立记录；警告会暂停任务，点击警告后选择是否继续。
@@ -52,8 +57,17 @@ const taskId = () => `plugin-task-${Date.now()}-${++nextTaskNumber}`;
 export function usePluginTasks() {
   const [tasks, setTasks] = useState<Record<string, PluginTask>>({});
   const [warningDialog, setWarningDialog] = useState<PluginTaskWarningDialog | null>(null);
+  const [completedRevision, setCompletedRevision] = useState(0);
   const controllers = useRef<Record<string, AbortController>>({});
+  const activeTargets = useRef<Record<string, PluginTaskTarget | undefined>>({});
   const warnings = useRef<Record<string, PendingWarning>>({});
+  const warningDialogRef = useRef<PluginTaskWarningDialog | null>(null);
+
+  const closeWarning = useCallback((id: string) => {
+    if (warningDialogRef.current?.taskId !== id) return;
+    warningDialogRef.current = null;
+    setWarningDialog(current => (current?.taskId === id ? null : current));
+  }, []);
 
   const updateTask = useCallback((id: string, updater: (task: PluginTask) => PluginTask) => {
     setTasks(current => (current[id] ? {...current, [id]: updater(current[id])} : current));
@@ -68,24 +82,32 @@ export function usePluginTasks() {
     name: string,
     kind: PluginTaskKind,
     operation: (runner: PluginTaskRunner) => Promise<void>,
+    target?: PluginTaskTarget,
   ) => {
-    // 禁止绕过页面按钮触发并发写入；清理尚未完成时也复用当前任务。
-    const activeId = Object.keys(controllers.current)[0];
+    // 只有 npm 任务共用 pnpm 写锁；同一安装位置仍复用任务，避免同时覆盖/删除。
+    // 用同步 ref 判断，快速连点与取消清理期间也不能绕过互斥。
+    const activeId = Object.keys(controllers.current).find(active => {
+      const activeTarget = activeTargets.current[active];
+      return (target !== undefined && activeTarget?.key === target.key)
+        || (isNpmTarget(target) && isNpmTarget(activeTarget));
+    });
     if (activeId) return activeId;
     const id = taskId();
     const controller = new AbortController();
     controllers.current[id] = controller;
+    activeTargets.current[id] = target;
     const startedAt = Date.now();
+    const action = kind === 'version' ? '切换版本' : kind === 'remove' ? '卸载' : '安装';
     setTasks(current => ({
       ...current,
-      [id]: {id, name, kind, status: 'running', startedAt, logs: [`开始${kind === 'remove' ? '卸载' : '安装'}：${name}`]},
+      [id]: {id, name, target, kind, status: 'running', startedAt, logs: [`开始${action}：${name}`]},
     }));
     const onLog = (line: string) => appendLog(id, line);
     const abort = () => {
       const pending = warnings.current[id];
       delete warnings.current[id];
       pending?.resolve(false);
-      setWarningDialog(current => (current?.taskId === id ? null : current));
+      closeWarning(id);
       updateTask(id, task => ({
         ...task,
         status: 'running',
@@ -133,6 +155,10 @@ export function usePluginTasks() {
         setName: nextName => {
           if (nextName.trim()) updateTask(id, task => ({...task, name: nextName.trim()}));
         },
+        setTarget: nextTarget => {
+          activeTargets.current[id] = nextTarget;
+          updateTask(id, task => ({...task, target: nextTarget}));
+        },
       });
       finish();
     } catch (error) {
@@ -140,12 +166,15 @@ export function usePluginTasks() {
     } finally {
       controller.signal.removeEventListener('abort', abort);
       delete controllers.current[id];
+      delete activeTargets.current[id];
       const pending = warnings.current[id];
       delete warnings.current[id];
       pending?.resolve(false);
+      closeWarning(id);
+      setCompletedRevision(current => current + 1);
     }
     return id;
-  }, [appendLog, updateTask]);
+  }, [appendLog, closeWarning, updateTask]);
 
   const stopTask = useCallback((id: string) => {
     const controller = controllers.current[id];
@@ -165,17 +194,19 @@ export function usePluginTasks() {
   const showWarning = useCallback((id: string) => {
     const pending = warnings.current[id];
     const controller = controllers.current[id];
-    if (!pending || pending.open || !controller || controller.signal.aborted) return;
+    if (!pending || pending.open || warningDialogRef.current || !controller || controller.signal.aborted) return;
     const warning = pending.warning;
     pending.open = true;
+    warningDialogRef.current = {taskId: id, warning};
     setWarningDialog({taskId: id, warning});
   }, []);
 
   const resolveWarning = useCallback((id: string, accepted: boolean) => {
     const pending = warnings.current[id];
     const controller = controllers.current[id];
+    const dialog = warningDialogRef.current;
     // 绑定当前弹窗对应的 PendingWarning，避免旧弹窗回调误处理同一任务后续的新警告。
-    if (!pending || pending.open === false || warningDialog?.taskId !== id || warningDialog.warning !== pending.warning || !controller || controller.signal.aborted) {
+    if (!pending || pending.open === false || dialog?.taskId !== id || dialog.warning !== pending.warning || warningDialog?.taskId !== id || warningDialog.warning !== pending.warning || !controller || controller.signal.aborted) {
       return;
     }
     const choose = (confirmed: boolean) => {
@@ -195,17 +226,20 @@ export function usePluginTasks() {
       }
       pending.resolve(confirmed);
     };
+    closeWarning(id);
     choose(accepted);
-    setWarningDialog(current => (current?.taskId === id ? null : current));
-  }, [appendLog, updateTask, warningDialog]);
+  }, [appendLog, closeWarning, updateTask, warningDialog]);
 
   const taskList = useMemo(() => Object.values(tasks).sort((left, right) => right.startedAt - left.startedAt), [tasks]);
   const running = useMemo(() => taskList.some(task => task.status === 'running' || task.status === 'warning'), [taskList]);
+  const npmBusy = useMemo(() => taskList.some(task => isNpmTarget(task.target) && (task.status === 'running' || task.status === 'warning')), [taskList]);
 
   return {
     tasks,
     taskList,
     running,
+    npmBusy,
+    completedRevision,
     runTask,
     stopTask,
     removeTask,

@@ -3,13 +3,12 @@ import {proxiedUrl} from './appSettings';
 import {shellQuote} from '../utils/shell';
 
 export type PluginType = 'npm' | 'git' | 'app';
+export type PluginInstallSource = 'npm' | 'git' | 'local';
 
 type PluginRepository = {
   type?: string;
   url?: string;
   branch?: string;
-  /** 克隆或更新后固定到指定提交。 */
-  commit?: string;
 };
 
 export type PluginFile = {
@@ -25,6 +24,8 @@ export type Plugin = {
   homepage?: string;
   version?: string;
   installed?: boolean;
+  /** 实际安装来源：plugins 下没有 .git 的目录（例如 ZIP 导入）为 local。 */
+  installSource?: PluginInstallSource;
   repo?: PluginRepository[];
   files?: PluginFile[];
   allowBuild?: string[];
@@ -37,9 +38,13 @@ export type Plugin = {
   installedFiles?: string[];
   /** 虚拟条目：karin-plugin-example 目录本身，只能卸载，不能安装 */
   virtual?: boolean;
-  /** 本地探测到的条目：容器里装了，但插件市场列表里没有（未知来源） */
+  /** 本地探测到、插件市场列表里没有的条目；安装来源单独由 installSource 表示。 */
   local?: boolean;
 };
+
+/** 同名的 npm 包和 plugins 目录是两份安装，列表和任务都按实际位置区分。 */
+export const pluginIdentity = (plugin: Plugin) =>
+  `${plugin.type === 'git' ? 'directory' : plugin.type}:${plugin.name}`;
 
 export type PluginDetails = {
   readme: string;
@@ -78,7 +83,7 @@ type RemoveOptions = {
 
 export const npmPackageUrl = (name: string) => `https://www.npmjs.com/package/${name}`;
 
-const KARIN_DIR = '/root/karin';
+export const KARIN_DIR = '/root/karin';
 const PLUGIN_TYPES = new Set<PluginType>(['npm', 'git', 'app']);
 
 /**
@@ -273,10 +278,10 @@ export const gitPluginNameFromUrl = (url: string) => {
 };
 
 /**
- * 手动安装 git 插件：市场列表里没有的仓库，用户自己填地址（可选分支、commit、目录名）。
+ * 手动安装 git 插件：市场列表里没有的仓库，用户自己填地址（可选分支、目录名）。
  * 安装 / 更新 / 卸载都复用市场那套 git 流程，这里只现造一个 git 条目。
  */
-/** 只接受 Git 分支/ref 名称或提交哈希，不接受选项和 revision 表达式。 */
+/** 只接受 Git 分支/ref 名称，不接受选项和 revision 表达式。 */
 const validateGitRef = (value: string, label: string) => {
   if (!value) return;
   const invalid = value.startsWith('-') || value.startsWith('/') || value.endsWith('/') ||
@@ -287,7 +292,7 @@ const validateGitRef = (value: string, label: string) => {
   if (invalid) throw new Error(`${label} 不合法：${value}`);
 };
 
-export const manualGitPlugin = (url: string, name = '', branch = '', commit = '') => {
+export const manualGitPlugin = (url: string, name = '', branch = '') => {
   const trimmed = url.trim();
   if (!/^(?:https?:\/\/|git:\/\/|ssh:\/\/|git@)/i.test(trimmed)) {
     throw new Error('请填写 git 仓库地址（https://… 或 git@…）');
@@ -295,7 +300,6 @@ export const manualGitPlugin = (url: string, name = '', branch = '', commit = ''
   const wanted = (name.trim() || gitPluginNameFromUrl(trimmed)).trim();
   if (!wanted) throw new Error('请填写插件目录名，例如 karin-plugin-xxx');
   validateGitRef(branch.trim(), '分支');
-  validateGitRef(commit.trim(), 'commit');
   /** karin-plugin-example 是 app 插件共享目录，git 覆盖安装会 rm -rf 掉里面的文件 */
   if (wanted === APP_PLUGIN_DIR) throw new Error(`${APP_PLUGIN_DIR} 是 APP 插件目录，不能作为 git 插件目录名`);
   const plugin: Plugin = {
@@ -307,7 +311,6 @@ export const manualGitPlugin = (url: string, name = '', branch = '', commit = ''
       type: 'git',
       url: trimmed,
       branch: branch.trim() || undefined,
-      commit: commit.trim() || undefined,
     }],
   };
   /** 复用市场那套名称校验，名字不合法直接抛错 */
@@ -371,8 +374,16 @@ const writeAppManifest = async (manifest: AppManifest) => {
   ).catch(() => {});
 };
 
+// APP 下载可以并行；归属文件的读取、修改和写回必须完整串行，避免相互覆盖。
+let appManifestQueue = Promise.resolve();
+const withAppManifest = <T>(operation: () => Promise<T>): Promise<T> => {
+  const result = appManifestQueue.then(operation);
+  appManifestQueue = result.then(() => {}, () => {});
+  return result;
+};
+
 /** 安装完成后记录文件哈希，之后即使改名也能认出这个 js 属于哪个 app 插件 */
-const recordAppInstall = async (plugin: Plugin, fileNames: string[]) => {
+const recordAppInstall = (plugin: Plugin, fileNames: string[]) => withAppManifest(async () => {
   if (!fileNames.length) return;
   const [dirFiles, manifest] = await Promise.all([listAppPluginDir(), readAppManifest()]);
   const entries = fileNames.flatMap(name => {
@@ -391,7 +402,43 @@ const recordAppInstall = async (plugin: Plugin, fileNames: string[]) => {
     ...entries,
   ];
   await writeAppManifest(manifest);
-};
+});
+
+/** 快照清理与安装记账共用队列，避免旧快照擦掉刚安装的插件归属。 */
+const readAppPluginState = () => withAppManifest(async () => {
+  const [dirFiles, manifest] = await Promise.all([listAppPluginDir(), readAppManifest()]);
+  const filesByHash = new Map<string, DirFile[]>();
+  dirFiles.forEach(file => {
+    const bucket = filesByHash.get(file.hash) ?? [];
+    bucket.push(file);
+    filesByHash.set(file.hash, bucket);
+  });
+  const owners = new Map<string, string>();
+  const matches = new Map<string, string[]>();
+  const nextManifest: AppManifest = {};
+  Object.keys(manifest).forEach(pluginName => {
+    const used = new Set<string>();
+    const kept: AppManifestEntry[] = [];
+    const matched: string[] = [];
+    manifest[pluginName].forEach(entry => {
+      const candidates = filesByHash.get(entry.hash) ?? [];
+      const hit =
+        candidates.find(candidate => candidate.name === entry.file && !used.has(candidate.name)) ??
+        candidates.find(candidate => !used.has(candidate.name));
+      if (!hit) return;
+      used.add(hit.name);
+      matched.push(hit.name);
+      kept.push({file: hit.name, hash: hit.hash});
+      if (!owners.has(hit.name)) owners.set(hit.name, pluginName);
+    });
+    if (kept.length) nextManifest[pluginName] = kept;
+    matches.set(pluginName, matched);
+  });
+  if (JSON.stringify(nextManifest) !== JSON.stringify(manifest)) {
+    await writeAppManifest(nextManifest);
+  }
+  return {dirFiles, owners, matches};
+});
 
 /** 目录条目：karin-plugin-example 本身，只能卸载 */
 export const appPluginDirEntry = (snapshot: PluginSnapshot): Plugin => ({
@@ -405,14 +452,15 @@ export const appPluginDirEntry = (snapshot: PluginSnapshot): Plugin => ({
 
 /** 一次性探测所有目录型插件，避免每个插件都跑一次命令 */
 const pluginProbe = (plugin: Plugin) => {
+  const identity = pluginIdentity(plugin);
   try {
     const path = plugin.type === 'npm' ? `${KARIN_DIR}/node_modules/${plugin.name}` : pluginPath(plugin);
     const check = plugin.type === 'git'
       ? `test -d ${shellQuote(path)} && test -f ${shellQuote(`${path}/package.json`)}`
       : `test -e ${shellQuote(path)}`;
-    return {name: plugin.name, command: `${check} && echo ${shellQuote(plugin.name)}`};
+    return {name: identity, command: `${check} && echo ${shellQuote(identity)}`};
   } catch {
-    return {name: plugin.name, command: 'false'};
+    return {name: identity, command: 'false'};
   }
 };
 
@@ -429,25 +477,31 @@ const listExistingPlugins = async (probes: {name: string; command: string}[]) =>
 type LocalPlugin = {
   name: string;
   type: 'npm' | 'git';
+  installSource: PluginInstallSource;
   /** git 插件的来源仓库（从 .git 配置里读，读不到就空） */
   remote?: string;
 };
 
 /**
- * 一次扫描容器里已装的插件：npm 的看 node_modules（三种命名约定），git 的看 plugins/ 下的目录。
+ * 一次扫描容器里已装的插件：npm 的看 node_modules（三种命名约定），目录插件看 plugins/。
  * 不是从插件市场装进来的也照样能探到，这样本地装的插件在列表里看得见、也能卸载。
  */
 const scanLocalPlugins = async (): Promise<LocalPlugin[]> => {
   const nodeModules = `${KARIN_DIR}/node_modules`;
   const pluginsDir = `${KARIN_DIR}/plugins`;
+  // do 后必须换行，不能用分号连接成 do;，否则整个本地扫描命令都会语法错误。
   const listGitDirs = [
     `for d in ${pluginsDir}/*/ ${pluginsDir}/@*/*/; do`,
     `test -d "$d" || continue`,
     `r=''`,
+    `s=local`,
+    `if test -d "$d/.git" || test -f "$d/.git"; then`,
+    `s=git`,
     `if command -v git >/dev/null 2>&1; then r=$(git -C "$d" config --get remote.origin.url 2>/dev/null); fi`,
-    `printf '%s\t%s\n' "$d" "$r"`,
+    `fi`,
+    `printf '%s\t%s\t%s\n' "$d" "$r" "$s"`,
     `done`,
-  ].join('; ');
+  ].join('\n');
   const command = [
     `echo '@npm'`,
     `ls -d ${nodeModules}/karin-plugin-* ${nodeModules}/@*/karin-plugin-* ${nodeModules}/@karinjs/plugin-* 2>/dev/null`,
@@ -476,16 +530,27 @@ const scanLocalPlugins = async (): Promise<LocalPlugin[]> => {
     if (!line) return;
     if (section === 'npm' && line.startsWith(npmPrefix)) {
       const name = line.slice(npmPrefix.length).replace(/\/+$/, '');
-      if (name) found.set(name, {name, type: 'npm'});
+      if (name) found.set(`npm:${name}`, {name, type: 'npm', installSource: 'npm'});
       return;
     }
     if (section === 'git') {
-      const [rawDir, remote = ''] = line.split('\t');
+      const [rawDir, remote = '', source = 'local'] = line.split('\t');
       const path = (rawDir ?? '').trim();
       if (!path.startsWith(pluginsPrefix)) return;
       const name = path.slice(pluginsPrefix.length).replace(/\/+$/, '').trim();
-      /** app 插件共用目录不是插件条目，市场外的目录都算本地 git 插件 */
-      if (name && name !== APP_PLUGIN_DIR) found.set(name, {name, type: 'git', remote: remote.trim() || undefined});
+      /** app 共用目录和 @scope 分组目录不作为独立插件；卸载使用实际落地目录名。 */
+      if (!name || name === APP_PLUGIN_DIR || /^@[^/]+$/.test(name)) return;
+      try {
+        pluginPath({name, type: 'git'});
+      } catch {
+        return;
+      }
+      found.set(`directory:${name}`, {
+        name,
+        type: 'git',
+        installSource: source === 'git' ? 'git' : 'local',
+        remote: remote.trim() || undefined,
+      });
     }
   });
   return [...found.values()];
@@ -494,73 +559,72 @@ const scanLocalPlugins = async (): Promise<LocalPlugin[]> => {
 /**
  * 拉取插件市场 + 容器内的安装状态。
  * app 插件按哈希归属判断，所以随便改个同名的文件不会被误判成该插件。
- * 本地探测（node_modules + plugins 目录）覆盖市场的探测结果，市场里没有的本地插件补成未知来源条目。
+ * 本地探测按安装位置合并市场资料，同名的 npm 包、目录插件和 app 文件分别保留。
  */
 export async function loadPluginSnapshot(force = false): Promise<PluginSnapshot> {
-  const [market, dirFiles, manifest, local] = await Promise.all([
+  const [market, appState, local] = await Promise.all([
     fetchPlugins(force),
-    listAppPluginDir(),
-    readAppManifest(),
+    readAppPluginState(),
     scanLocalPlugins(),
   ]);
+  const {dirFiles, owners, matches} = appState;
   const stored = await listExistingPlugins(market.filter(plugin => plugin.type !== 'app').map(pluginProbe));
-  const localByName = new Map(local.map(item => [item.name, item]));
-  const marketNames = new Set(market.map(plugin => plugin.name));
-  const filesByHash = new Map<string, DirFile[]>();
-  dirFiles.forEach(file => {
-    const bucket = filesByHash.get(file.hash) ?? [];
-    bucket.push(file);
-    filesByHash.set(file.hash, bucket);
+  const marketByName = new Map<string, Plugin[]>();
+  market.forEach(plugin => {
+    const entries = marketByName.get(plugin.name) ?? [];
+    entries.push(plugin);
+    marketByName.set(plugin.name, entries);
   });
-
-  const owners = new Map<string, string>();
-  const matches = new Map<string, string[]>();
-  const nextManifest: AppManifest = {};
-
-  Object.keys(manifest).forEach(pluginName => {
-    const used = new Set<string>();
-    const kept: AppManifestEntry[] = [];
-    const matched: string[] = [];
-    manifest[pluginName].forEach(entry => {
-      const candidates = filesByHash.get(entry.hash) ?? [];
-      const hit =
-        candidates.find(candidate => candidate.name === entry.file && !used.has(candidate.name)) ??
-        candidates.find(candidate => !used.has(candidate.name));
-      if (!hit) return;
-      used.add(hit.name);
-      matched.push(hit.name);
-      kept.push({file: hit.name, hash: hit.hash});
-      if (!owners.has(hit.name)) owners.set(hit.name, pluginName);
-    });
-    if (kept.length) nextManifest[pluginName] = kept;
-    matches.set(pluginName, matched);
-  });
-
-  if (JSON.stringify(nextManifest) !== JSON.stringify(manifest)) {
-    await writeAppManifest(nextManifest);
-  }
-
-  const plugins: Plugin[] = market.map(plugin => {
-    if (plugin.type === 'app') {
-      const installedFiles = matches.get(plugin.name) ?? [];
-      return {...plugin, installed: installedFiles.length > 0, installedFiles};
-    }
-    /** 本地探测到的（含 pnpm 装的）优先：市场那条命令探不到时以本地目录为准 */
-    return {...plugin, installed: stored.has(plugin.name) || localByName.has(plugin.name), installedFiles: undefined};
-  });
-
+  const installedByIdentity = new Map<string, Plugin>();
   local.forEach(item => {
-    if (marketNames.has(item.name)) return;
+    const marketEntries = marketByName.get(item.name) ?? [];
+    const metadata = marketEntries.find(plugin => plugin.type === item.type) ?? marketEntries[0];
     const githubUrl = item.remote ? githubUrlFrom(item.remote) : undefined;
-    plugins.push({
+    const plugin: Plugin = {
+      ...metadata,
       name: item.name,
       type: item.type,
-      description: '本地安装（插件市场里没有这个条目）',
+      description: metadata?.description,
       installed: true,
-      local: true,
-      homepage: githubUrl,
-      repo: item.remote ? [{type: 'git', url: item.remote}] : undefined,
-    });
+      installedFiles: undefined,
+      installSource: item.installSource,
+      local: metadata ? undefined : true,
+      homepage: githubUrl ?? metadata?.homepage,
+      repo: item.remote ? [{type: 'git', url: item.remote}] : metadata?.repo,
+    };
+    installedByIdentity.set(pluginIdentity(plugin), plugin);
+  });
+  market.forEach(plugin => {
+    const identity = pluginIdentity(plugin);
+    if (plugin.type === 'app') {
+      const installedFiles = matches.get(plugin.name) ?? [];
+      if (installedFiles.length) installedByIdentity.set(identity, {...plugin, installed: true, installedFiles});
+    } else if (!installedByIdentity.has(identity) && stored.has(identity)) {
+      // 扫描没返回时保留直接探测结果；没有 .git 证据的目录不声称来自 Git。
+      installedByIdentity.set(identity, {
+        ...plugin,
+        installed: true,
+        installSource: plugin.type === 'npm' ? 'npm' : 'local',
+      });
+    }
+  });
+
+  const installedNames = new Set([...installedByIdentity.values()].map(plugin => plugin.name));
+  const plugins: Plugin[] = [];
+  const added = new Set<string>();
+  market.forEach(plugin => {
+    const identity = pluginIdentity(plugin);
+    if (added.has(identity)) return;
+    const installed = installedByIdentity.get(identity);
+    // 已有同名安装时只展示实际安装的几份，避免追加未安装的市场占位。
+    if (!installed && installedNames.has(plugin.name)) return;
+    plugins.push(installed ?? {...plugin, installed: false, installedFiles: plugin.type === 'app' ? [] : undefined});
+    added.add(identity);
+  });
+  installedByIdentity.forEach((plugin, identity) => {
+    if (added.has(identity)) return;
+    plugins.push(plugin);
+    added.add(identity);
   });
 
   return {
@@ -582,8 +646,51 @@ export const githubUrlFrom = (value?: string) => {
   return shorthand ? `https://github.com/${shorthand[1]}` : undefined;
 };
 
+/** 仅从插件根目录读取说明；不存在与读取失败分开处理，空文件也算本地 README。 */
+const readLocalPluginReadme = async (plugin: Plugin): Promise<string | null> => {
+  const script = `
+    const fs = require('node:fs');
+    const path = require('node:path');
+    const directory = process.argv[1];
+    let readme = null;
+    try {
+      const names = fs.readdirSync(directory).sort();
+      for (const wanted of ['readme.md', 'readme.markdown', 'readme.txt', 'readme']) {
+        const file = names.find(name => name.toLowerCase() === wanted && fs.statSync(path.join(directory, name)).isFile());
+        if (file) {
+          readme = fs.readFileSync(path.join(directory, file), 'utf8');
+          break;
+        }
+      }
+    } catch (error) {
+      if (error.code !== 'ENOENT' && error.code !== 'ENOTDIR') throw error;
+    }
+    const chunks = readme === null ? null : [];
+    if (readme !== null) {
+      for (let offset = 0; offset < readme.length; offset += 4096) chunks.push(readme.slice(offset, offset + 4096));
+    }
+    process.stdout.write(JSON.stringify({readme: chunks}, null, 2));
+  `;
+  // daemon 会拆分超长行；每段单独成行，避免传输插入的换行破坏 JSON 字符串。
+  const output = await executeAndCollect(`node -e ${shellQuote(script)} ${shellQuote(pluginInstallPath(plugin))}`);
+  const result: {readme: string[] | null} = JSON.parse(output);
+  return result.readme?.join('') ?? null;
+};
+
 export async function fetchPluginDetails(plugin: Plugin): Promise<PluginDetails> {
-  const cached = detailCache.get(plugin.name);
+  const unknownSource = plugin.installSource === 'local';
+  const githubUrl = plugin.repo?.map(repository => githubUrlFrom(repository.url)).find(Boolean) ?? githubUrlFrom(plugin.homepage);
+  const npmUrl = unknownSource ? '' : npmPackageUrl(plugin.name);
+  // 每次打开都先读本地，安装、更新或手动编辑后不会被远程缓存盖住。
+  if (plugin.installed) {
+    const readme = await readLocalPluginReadme(plugin);
+    if (readme !== null) return {readme, githubUrl, npmUrl};
+  }
+  // ZIP/手动复制的目录可能与 npm 包重名，不能据此展示别人的远程 README。
+  if (unknownSource) return {readme: '', githubUrl, npmUrl};
+
+  const identity = pluginIdentity(plugin);
+  const cached = detailCache.get(identity);
   if (cached) return cached;
 
   const response = await fetch(`https://registry.npmjs.org/${plugin.name.replace('/', '%2F')}`);
@@ -600,15 +707,15 @@ export async function fetchPluginDetails(plugin: Plugin): Promise<PluginDetails>
   const repositoryUrl = typeof repository === 'string' ? repository : repository?.url;
   const details: PluginDetails = {
     readme,
-    githubUrl: githubUrlFrom(repositoryUrl) ?? githubUrlFrom(plugin.homepage),
-    npmUrl: npmPackageUrl(plugin.name),
+    githubUrl: githubUrl ?? githubUrlFrom(repositoryUrl),
+    npmUrl,
   };
-  detailCache.set(plugin.name, details);
+  detailCache.set(identity, details);
   return details;
 }
 
 /** Karin 项目里的 pnpm 命令：有 workspace 就带上 -w，否则直接跑 */
-const pnpmCommand = (args: string) =>
+export const pnpmCommand = (args: string) =>
   `cd ${KARIN_DIR} && if test -f pnpm-workspace.yaml; then pnpm -w ${args}; else pnpm ${args}; fi`;
 
 const npmInstallCommand = (plugin: Plugin) => pnpmCommand(`i ${shellQuote(plugin.name)}`);
@@ -618,22 +725,13 @@ const gitInstallCommand = (plugin: Plugin) => {
   if (!repository?.url) throw new Error('Git 插件缺少可用仓库地址');
   const path = pluginPath(plugin);
   const branch = repository.branch?.trim();
-  const commit = repository.commit?.trim();
   validateGitRef(branch ?? '', '分支');
-  validateGitRef(commit ?? '', 'commit');
   const branchArgument = branch ? ` --branch ${shellQuote(branch)}` : '';
   /** 用户填了 GitHub 加速前缀时，clone/fetch 都走加速地址 */
   const repositoryUrl = proxiedUrl(repository.url);
   const git = `git -C ${shellQuote(path)}`;
-  const shortCommit = commit && /^[0-9a-f]{4,39}$/i.test(commit);
-  // 服务端通常不能解析短哈希：先补全各分支的历史，再让 Git 在本地解析；歧义哈希会报错。
-  const fetchHistory = `if test "$(${git} rev-parse --is-shallow-repository)" = true; then ${git} fetch --unshallow --tags -- origin '+refs/heads/*:refs/remotes/origin/*'; else ${git} fetch --tags -- origin '+refs/heads/*:refs/remotes/origin/*'; fi`;
-  const checkoutCommand = shortCommit
-    ? `(${fetchHistory}) && karin_commit=$(${git} rev-parse --verify --end-of-options ${shellQuote(`${commit}^{commit}`)}) && ${git} reset --hard "$karin_commit"`
-    : `${git} fetch --depth 1 -- origin ${shellQuote(commit || branch || 'HEAD')} && ${git} reset --hard FETCH_HEAD`;
-  const cloneCommand = commit
-    ? `git clone --no-checkout --depth 1${branchArgument} -- ${shellQuote(repositoryUrl)} ${shellQuote(path)} && ${checkoutCommand}`
-    : `git clone --depth 1${branchArgument} -- ${shellQuote(repositoryUrl)} ${shellQuote(path)}`;
+  const checkoutCommand = `${git} fetch --depth 1 -- origin ${shellQuote(branch || 'HEAD')} && ${git} reset --hard FETCH_HEAD`;
+  const cloneCommand = `git clone --depth 1${branchArgument} -- ${shellQuote(repositoryUrl)} ${shellQuote(path)}`;
   return [
     `command -v git >/dev/null 2>&1 || (apt-get update && apt-get install -y git)`,
     `mkdir -p ${shellQuote(`${KARIN_DIR}/plugins`)}`,

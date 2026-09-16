@@ -111,7 +111,7 @@ class DocumentsProvider : android.provider.DocumentsProvider() {
     val row = arrayOfNulls<Any>(columns.size)
     put(row, columns, DocumentsContract.Root.COLUMN_ROOT_ID, ROOT_ID)
     put(row, columns, DocumentsContract.Root.COLUMN_DOCUMENT_ID, DOCUMENT_ID_ROOT)
-    put(row, columns, DocumentsContract.Root.COLUMN_TITLE, "Container")
+    put(row, columns, DocumentsContract.Root.COLUMN_TITLE, "Karin")
     put(row, columns, "mime_type", MIME_ROOT)
     put(row, columns, DocumentsContract.Root.COLUMN_SUMMARY, "共 ${formatBytes(rootDir.totalSpace)}，可用 ${formatBytes(rootDir.usableSpace)}")
     put(row, columns, DocumentsContract.Root.COLUMN_ICON, R.mipmap.ic_launcher)

@@ -1,10 +1,11 @@
 import React, {useEffect, useMemo, useRef, useState} from 'react';
 import {Animated, GestureResponderEvent, LayoutChangeEvent, PanResponder, PanResponderGestureState, StyleSheet, Text, View} from 'react-native';
-import {Download} from 'lucide-react-native';
+import {AlertTriangle, Download} from 'lucide-react-native';
 import {Colors} from '../theme/colors';
 
 type DraggableFabProps = {
   badgeCount: number;
+  warningCount?: number;
   colors: Colors;
   onPress: () => void;
 };
@@ -15,13 +16,14 @@ const FAB_SIZE = 52;
 const FAB_MARGIN = 18;
 const DRAG_THRESHOLD = 8;
 
-export default function DraggableFab({badgeCount, colors, onPress}: DraggableFabProps) {
+export default function DraggableFab({badgeCount, warningCount = 0, colors, onPress}: DraggableFabProps) {
   const translate = useRef(new Animated.ValueXY({x: 0, y: 0})).current;
   const layout = useRef({width: 0, height: 0});
   const position = useRef({x: 0, y: 0});
   const dragState = useRef<DragState>({moved: false, origin: {x: 0, y: 0}});
   const onPressRef = useRef(onPress);
   const [pressed, setPressed] = useState(false);
+  const hasWarnings = warningCount > 0;
 
   useEffect(() => {
     onPressRef.current = onPress;
@@ -105,19 +107,19 @@ export default function DraggableFab({badgeCount, colors, onPress}: DraggableFab
   return (
     <View onLayout={handleLayout} pointerEvents="box-none" style={styles.layer}>
       <Animated.View
-        accessibilityLabel={`插件任务，共 ${badgeCount} 个`}
+        accessibilityLabel={hasWarnings ? `插件任务，有 ${warningCount} 项警告` : `插件任务，共 ${badgeCount} 个`}
         accessibilityRole="button"
         onAccessibilityTap={onPress}
         style={[
           styles.fab,
           {
-            backgroundColor: colors.accent,
+            backgroundColor: hasWarnings ? colors.orange : colors.accent,
             transform: translate.getTranslateTransform(),
           },
           pressed ? styles.fabPressed : null,
         ]}
         {...panResponder.panHandlers}>
-        <Download color="#fff" size={20} />
+        {hasWarnings ? <AlertTriangle color="#fff" size={21} /> : <Download color="#fff" size={20} />}
         {badgeCount > 0 ? <Text style={styles.badge}>{badgeCount > 99 ? '99+' : badgeCount}</Text> : null}
       </Animated.View>
     </View>

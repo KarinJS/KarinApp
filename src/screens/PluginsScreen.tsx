@@ -16,6 +16,8 @@ import {
 } from 'react-native';
 import {useSafeAreaInsets} from 'react-native-safe-area-context';
 import {
+  AlertTriangle,
+  ArrowLeftRight,
   BadgeCheck,
   ChevronDown,
   ChevronUp,
@@ -41,6 +43,7 @@ import {
 import DraggableFab from '../components/DraggableFab';
 import {GithubIcon, NpmIcon} from '../components/BrandIcons';
 import PluginTaskCard from '../components/PluginTaskCard';
+import PluginVersionSheet from '../components/PluginVersionSheet';
 import ConfirmDialog from '../components/ConfirmDialog';
 import MarkdownView from '../components/MarkdownView';
 import {Colors} from '../theme/colors';
@@ -48,6 +51,7 @@ import {loadAppSettings} from '../services/appSettings';
 import type {usePluginTasks, PluginTaskKind} from '../hooks/usePluginTasks';
 import {canImportLocalAppPlugin, importLocalAppPlugin} from '../services/appPluginImport';
 import {importLocalPluginArchive} from '../services/pluginArchiveImport';
+import {canSwitchPluginVersion, switchPluginVersion} from '../services/pluginVersionService';
 import {
   APP_PLUGIN_DIR,
   APP_PLUGIN_ROOTFS_DIR,
@@ -69,11 +73,12 @@ import {
   PluginSnapshot,
   PluginType,
   pluginCategoryIds,
+  pluginIdentity,
   pluginInstallPath,
   removePlugin,
 } from '../services/pluginService';
 
-type TaskKind = PluginTaskKind;
+type TaskKind = Exclude<PluginTaskKind, 'version'>;
 type TaskOptions = {
   files?: PluginFile[];
   renames?: Record<string, string>;
@@ -86,9 +91,7 @@ type PluginDetailState =
   | {status: 'loading'; npmUrl: string}
   | {status: 'ready'; details: PluginDetails}
   | {status: 'error'; npmUrl: string}
-  | {status: 'files'}
-  /** 本地探测到的 git 插件：npm 上没有条目，没有 README 可看 */
-  | {status: 'local'};
+  | {status: 'files'};
 
 /** 文件选择弹窗：安装（挑要装的文件）/ 卸载（挑要删的 APP 插件文件） */
 type PickerState = {mode: 'install' | 'remove'; plugin: Plugin};
@@ -122,6 +125,11 @@ const TYPE_META: Record<PluginType, {label: string; Icon: IconComponent; color: 
   git: {label: 'git', Icon: GitBranch, color: 'purple'},
   app: {label: 'js', Icon: FileCode, color: 'orange'},
 };
+
+const LOCAL_META: {label: string; Icon: IconComponent; color: keyof Colors} = {
+  label: '未知来源', Icon: Package, color: 'orange',
+};
+const pluginTypeMeta = (plugin: Plugin) => plugin.installSource === 'local' ? LOCAL_META : TYPE_META[plugin.type];
 
 /** 同名文件冲突时换一个不占用的文件名 */
 const freeFileName = (name: string, taken: Set<string>) => {
@@ -203,11 +211,12 @@ export default function PluginsScreen({colors, taskManager}: {colors: Colors; ta
   const [filter, setFilter] = useState('all');
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [query, setQuery] = useState('');
-  const {taskList, running: tasksBusy, runTask: executeTask, stopTask, removeTask, showWarning, warningDialog, resolveWarning} = taskManager;
+  const {taskList, npmBusy, completedRevision, runTask: executeTask, stopTask, removeTask, showWarning, warningDialog, resolveWarning} = taskManager;
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [tasksOpen, setTasksOpen] = useState(false);
   const [detailPlugin, setDetailPlugin] = useState<Plugin | null>(null);
   const [detailState, setDetailState] = useState<PluginDetailState>({status: 'loading', npmUrl: ''});
+  const [versionOpen, setVersionOpen] = useState(false);
   const [picker, setPicker] = useState<PickerState | null>(null);
   const [conflict, setConflict] = useState<ConflictState | null>(null);
   /** 安装方式选择：本地文件 / 直链下载 */
@@ -224,32 +233,37 @@ export default function PluginsScreen({colors, taskManager}: {colors: Colors; ta
   const [gitUrl, setGitUrl] = useState('');
   const [gitName, setGitName] = useState('');
   const [gitBranch, setGitBranch] = useState('');
-  const [gitCommit, setGitCommit] = useState('');
   const [gitError, setGitError] = useState('');
   /** 居中的表单（直链安装 / git 安装）被输入法顶上来时需要的底部内边距，0 表示键盘没弹 */
   const [manualKeyboardInset, setManualKeyboardInset] = useState(0);
   const [selectedFiles, setSelectedFiles] = useState<Record<string, boolean>>({});
   const detailRequestId = useRef(0);
   const loadedOnce = useRef(false);
-  const taskWasBusy = useRef(tasksBusy);
+  const taskCompletion = useRef(completedRevision);
+  const loadRun = useRef(0);
   const sheetY = useRef(new Animated.Value(330)).current;
   const manualStep = useRef<React.ComponentRef<typeof View>>(null);
   const gitStep = useRef<React.ComponentRef<typeof View>>(null);
 
   const load = useCallback(async (force = false) => {
+    const run = ++loadRun.current;
     if (loadedOnce.current) setRefreshing(true);
     else setLoading(true);
     setError('');
     try {
       /** 安装命令要同步拼 GitHub 加速前缀，先确保设置已加载 */
       await loadAppSettings();
-      setSnapshot(await loadPluginSnapshot(force));
+      const next = await loadPluginSnapshot(force);
+      if (run !== loadRun.current) return;
+      setSnapshot(next);
       loadedOnce.current = true;
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : String(caught));
+      if (run === loadRun.current) setError(caught instanceof Error ? caught.message : String(caught));
     } finally {
-      setLoading(false);
-      setRefreshing(false);
+      if (run === loadRun.current) {
+        setLoading(false);
+        setRefreshing(false);
+      }
     }
   }, []);
 
@@ -257,11 +271,11 @@ export default function PluginsScreen({colors, taskManager}: {colors: Colors; ta
     load();
   }, [load]);
 
-  // 任务由 App 持有；切页回来后，完成时也要刷新当前页面的安装状态。
+  // 并行任务每完成一项就刷新，不等待其他任务（或警告确认）全部结束。
   useEffect(() => {
-    if (taskWasBusy.current && !tasksBusy) load(true);
-    taskWasBusy.current = tasksBusy;
-  }, [load, tasksBusy]);
+    if (taskCompletion.current !== completedRevision) load(true);
+    taskCompletion.current = completedRevision;
+  }, [load, completedRevision]);
 
   useEffect(() => {
     if (tasksOpen) {
@@ -307,11 +321,11 @@ export default function PluginsScreen({colors, taskManager}: {colors: Colors; ta
   /** git 安装表单里实时预览的目标目录名，以及会不会覆盖已装的插件目录 */
   const gitTarget = useMemo(() => (gitName.trim() || gitPluginNameFromUrl(gitUrl)).trim(), [gitName, gitUrl]);
   const gitNameValid = gitTarget === '' || /^(?:@[\w.-]+\/)?[\w.-]+$/.test(gitTarget);
-  const installedNames = useMemo(
-    () => new Set(snapshot.plugins.filter(plugin => plugin.installed).map(plugin => plugin.name)),
+  const installedDirectoryNames = useMemo(
+    () => new Set(snapshot.plugins.filter(plugin => plugin.installed && plugin.type === 'git').map(plugin => plugin.name)),
     [snapshot.plugins],
   );
-  const gitConflict = gitTarget !== '' && installedNames.has(gitTarget);
+  const gitConflict = gitTarget !== '' && installedDirectoryNames.has(gitTarget);
   /** 旧版本原生层没有导入模块时，本地文件那条路给个明确提示而不是点了没反应 */
   const localImportAvailable = useMemo(() => canImportLocalAppPlugin(), []);
   /** karin-plugin-example 是固定条目，永远排在最前面 */
@@ -378,8 +392,14 @@ export default function PluginsScreen({colors, taskManager}: {colors: Colors; ta
   if (activeCategory) summaryText = `${activeCategory.label} · ${counts[activeCategory.id] ?? 0} 个插件`;
   if (search) summaryText = `搜索「${query.trim()}」· ${visibleRows.length} 个结果`;
 
-  const runningTaskName = taskList.find(task => task.status === 'running' || task.status === 'warning')?.name ?? null;
+  const runningTaskKeys = useMemo(() => new Set(taskList
+    .filter(task => task.status === 'running' || task.status === 'warning')
+    .flatMap(task => task.target ? [task.target.key] : [])), [taskList]);
+  const isPluginBusy = useCallback((plugin: Plugin) =>
+    (plugin.type === 'npm' && npmBusy) || runningTaskKeys.has(pluginIdentity(plugin)), [npmBusy, runningTaskKeys]);
+  const warningCount = taskList.filter(task => task.status === 'warning').length;
   const detailInstalled = Boolean(detailPlugin?.installed);
+  const detailBusy = detailPlugin ? isPluginBusy(detailPlugin) : false;
   const detailGithubUrl =
     detailState.status === 'ready'
       ? detailState.details.githubUrl
@@ -429,6 +449,7 @@ export default function PluginsScreen({colors, taskManager}: {colors: Colors; ta
 
   const runTask = useCallback(
     async (plugin: Plugin, kind: TaskKind, options: TaskOptions = {}) => {
+      if (isPluginBusy(plugin)) return;
       setTasksOpen(true);
       await executeTask(plugin.name, kind, async ({signal, onLog, onWarning}) => {
         if (kind === 'remove') {
@@ -441,9 +462,9 @@ export default function PluginsScreen({colors, taskManager}: {colors: Colors; ta
             onWarning,
           });
         }
-      });
+      }, {key: pluginIdentity(plugin), label: pluginTypeMeta(plugin).label, type: plugin.type});
     },
-    [executeTask],
+    [executeTask, isPluginBusy],
   );
 
   const pickFiles = useCallback((plugin: Plugin, mode: 'install' | 'remove') => {
@@ -514,18 +535,17 @@ export default function PluginsScreen({colors, taskManager}: {colors: Colors; ta
    */
   const submitGitInstall = useCallback(() => {
     try {
-      const plugin = manualGitPlugin(gitUrl, gitName, gitBranch, gitCommit);
+      const plugin = manualGitPlugin(gitUrl, gitName, gitBranch);
       setGitOpen(false);
       setGitUrl('');
       setGitName('');
       setGitBranch('');
-      setGitCommit('');
       setGitError('');
       runTask(plugin, 'install');
     } catch (caught) {
       setGitError(caught instanceof Error ? caught.message : String(caught));
     }
-  }, [gitBranch, gitCommit, gitName, gitUrl, runTask]);
+  }, [gitBranch, gitName, gitUrl, runTask]);
 
   /**
    * 本地文件安装：原生选文件后直接复制进 rootfs 的 app 插件目录，
@@ -546,15 +566,18 @@ export default function PluginsScreen({colors, taskManager}: {colors: Colors; ta
       setName(file.name);
       const suffix = /\.js$/i.test(file.name) ? '' : '（注意：Karin 只加载 .js，这个后缀不会生效）';
       onLog(`已导入 ${file.name}（${formatFileSize(file.size)}）到 plugins/${APP_PLUGIN_DIR}${suffix}`);
-    });
+    }, {key: pluginIdentity({name: APP_PLUGIN_DIR, type: 'app', virtual: true}), label: 'js', type: 'app'});
   }, [executeTask]);
 
   /** 从压缩包导入目录型 Karin 插件。 */
   const importLocalPluginArchiveFile = useCallback(async () => {
     setPluginInstallChoiceOpen(false);
     setTasksOpen(true);
-    await executeTask('从文件导入插件', 'install', async ({onLog, onWarning, signal, cancel, setName}) => {
-      const result = await importLocalPluginArchive({onLog, onWarning, signal, onName: setName});
+    await executeTask('从文件导入插件', 'install', async ({onLog, onWarning, signal, cancel, setName, setTarget}) => {
+      const result = await importLocalPluginArchive({onLog, onWarning, signal, onName: name => {
+        setName(name);
+        setTarget({key: pluginIdentity({name: name.split('/').pop() ?? name, type: 'git'}), label: '未知来源', type: 'git'});
+      }});
       if (!result) cancel();
     });
   }, [executeTask]);
@@ -575,14 +598,11 @@ export default function PluginsScreen({colors, taskManager}: {colors: Colors; ta
 
   const openDetails = useCallback(async (plugin: Plugin) => {
     const requestId = ++detailRequestId.current;
-    const npmUrl = npmPackageUrl(plugin.name);
+    const npmUrl = plugin.installSource === 'local' ? '' : npmPackageUrl(plugin.name);
+    setVersionOpen(false);
     setDetailPlugin(plugin);
     if (plugin.type === 'app') {
       setDetailState({status: 'files'});
-      return;
-    }
-    if (plugin.local && plugin.type === 'git') {
-      setDetailState({status: 'local'});
       return;
     }
     setDetailState({status: 'loading', npmUrl});
@@ -606,8 +626,20 @@ export default function PluginsScreen({colors, taskManager}: {colors: Colors; ta
   /** 关详情页：安装步骤一起复位，下次打开不会停在上一步 */
   const closeDetail = useCallback(() => {
     setDetailPlugin(null);
+    setVersionOpen(false);
     closeInstallSteps();
   }, [closeInstallSteps]);
+
+  const submitVersionChange = useCallback((version: string) => {
+    const plugin = detailPlugin;
+    if (!plugin || !canSwitchPluginVersion(plugin) || isPluginBusy(plugin) || !version.trim()) return;
+    closeDetail();
+    setTasksOpen(true);
+    executeTask(plugin.name, 'version', async ({signal, onLog}) => {
+      onLog(`${plugin.type === 'git' ? '目标提交' : '目标版本'}：${version}`);
+      await switchPluginVersion(plugin, version, onLog, signal);
+    }, {key: pluginIdentity(plugin), label: pluginTypeMeta(plugin).label, type: plugin.type});
+  }, [closeDetail, detailPlugin, executeTask, isPluginBusy]);
 
   const openUrl = useCallback((url: string) => {
     Linking.openURL(url).catch(() => {});
@@ -663,8 +695,7 @@ export default function PluginsScreen({colors, taskManager}: {colors: Colors; ta
           onPress={() => {
             setPluginInstallChoiceOpen(true);
           }}
-          disabled={tasksBusy}
-          style={[styles.actionPill, {backgroundColor: colors.surface, borderColor: colors.border}, tasksBusy && styles.disabledAction]}>
+          style={[styles.actionPill, {backgroundColor: colors.surface, borderColor: colors.border}]}>
           <Download color={colors.accent} size={13} />
           <Text style={[styles.actionPillText, {color: colors.text}]}>安装插件</Text>
         </Pressable>
@@ -739,6 +770,20 @@ export default function PluginsScreen({colors, taskManager}: {colors: Colors; ta
         )}
       </View>
 
+      {warningCount > 0 ? (
+        <Pressable
+          accessibilityLabel={`有 ${warningCount} 项插件任务需要处理`}
+          accessibilityRole='button'
+          onPress={() => setTasksOpen(true)}
+          style={({pressed}) => [styles.warningBanner, {backgroundColor: colors.orangeSoft, borderColor: colors.orange, opacity: pressed ? 0.8 : 1}]}>
+          <AlertTriangle color={colors.orange} size={18} />
+          <View style={styles.warningBannerCopy}>
+            <Text style={[styles.warningBannerTitle, {color: colors.orange}]}>{`有 ${warningCount} 项任务需要处理`}</Text>
+            <Text style={[styles.warningBannerText, {color: colors.muted}]}>点击查看警告并选择继续或取消</Text>
+          </View>
+        </Pressable>
+      ) : null}
+
       {loading ? (
         <View style={styles.state}>
           <ActivityIndicator color={colors.accent} />
@@ -769,15 +814,15 @@ export default function PluginsScreen({colors, taskManager}: {colors: Colors; ta
             </Text>
           ) : (
             visibleRows.map(plugin => {
-              const typeMeta = TYPE_META[plugin.type] ?? TYPE_META.npm;
-              const running = runningTaskName === plugin.name;
-              const disabled = tasksBusy;
+              const typeMeta = pluginTypeMeta(plugin);
+              const running = runningTaskKeys.has(pluginIdentity(plugin));
+              const disabled = isPluginBusy(plugin);
               const appFileCount = plugin.type === 'app' && !plugin.virtual ? appPluginFiles(plugin).length : 0;
               return (
                 <Pressable
                   accessibilityRole='button'
                   android_ripple={{color: colors.accentSoft}}
-                  key={plugin.name}
+                  key={pluginIdentity(plugin)}
                   onPress={() => openDetails(plugin)}
                   style={[styles.card, {backgroundColor: colors.surface, borderColor: colors.border}]}>
                   <View style={[styles.typeIcon, {backgroundColor: colors.neutralSoft}]}>
@@ -790,16 +835,11 @@ export default function PluginsScreen({colors, taskManager}: {colors: Colors; ta
                       {plugin.name}
                     </Text>
                     <View style={styles.metaRow}>
-                      <View style={[styles.tag, {backgroundColor: colors.neutralSoft}]}>
-                        <Text style={[styles.tagText, {color: colors.muted}]}>
+                      <View style={[styles.tag, {backgroundColor: plugin.installSource === 'local' ? colors.orangeSoft : colors.neutralSoft}]}>
+                        <Text style={[styles.tagText, {color: colors[typeMeta.color]}]}>
                           {plugin.virtual ? '目录' : typeMeta.label}
                         </Text>
                       </View>
-                      {plugin.local ? (
-                        <View style={[styles.tag, {backgroundColor: colors.orangeSoft}]}>
-                          <Text style={[styles.tagText, {color: colors.orange}]}>未知来源</Text>
-                        </View>
-                      ) : null}
                       {pluginCategoryIds(plugin).map(id => (
                         <View key={id} style={[styles.tag, {backgroundColor: colors.accentSoft}]}>
                           <Text style={[styles.tagText, {color: colors.accent}]}>{CATEGORY_META[id]?.label ?? id}</Text>
@@ -819,7 +859,7 @@ export default function PluginsScreen({colors, taskManager}: {colors: Colors; ta
                         ? appDirFiles.length
                           ? `目录里现有 ${appDirFiles.length} 个 js 文件，可以逐个卸载`
                           : '暂未安装 APP 插件'
-                        : plugin.description || '暂无描述'}
+                        : plugin.description?.trim() || '暂无描述'}
                     </Text>
                   </View>
                   <View style={styles.actions}>
@@ -873,7 +913,7 @@ export default function PluginsScreen({colors, taskManager}: {colors: Colors; ta
         </ScrollView>
       )}
 
-      <DraggableFab badgeCount={taskList.length} colors={colors} onPress={() => setTasksOpen(true)} />
+      <DraggableFab badgeCount={taskList.length} warningCount={warningCount} colors={colors} onPress={() => setTasksOpen(true)} />
       <Modal animationType='slide' onRequestClose={() => setTasksOpen(false)} transparent visible={tasksOpen}>
         <View style={styles.overlay}>
           <Pressable onPress={() => setTasksOpen(false)} style={styles.overlayBackdrop} />
@@ -944,7 +984,7 @@ export default function PluginsScreen({colors, taskManager}: {colors: Colors; ta
                 <GitBranch color={colors.accent} size={17} />
                 <View style={styles.choiceCopy}>
                   <Text style={[styles.choiceTitle, {color: colors.text}]}>从 Git 克隆</Text>
-                  <Text style={[styles.choiceNote, {color: colors.muted}]}>填写仓库地址，可指定分支和 commit</Text>
+                  <Text style={[styles.choiceNote, {color: colors.muted}]}>填写仓库地址，可指定分支</Text>
                 </View>
               </Pressable>
               <Pressable
@@ -979,7 +1019,7 @@ export default function PluginsScreen({colors, taskManager}: {colors: Colors; ta
               <View style={[styles.manualSheet, {backgroundColor: colors.surface, borderColor: colors.border}]}>
                 <Text style={[styles.name, {color: colors.text}]}>从 Git 仓库安装插件</Text>
                 <Text style={[styles.filePickerHint, {color: colors.muted}]}>
-                  {`填仓库地址，clone 到 plugins/<目录名>，装完按未知来源列出；目录已有内容时，点击任务的「警告」标签选择是否覆盖。`}
+                  {`填写仓库地址后安装到 plugins/<目录名>；目录已有内容时，点击任务的「警告」标签选择是否覆盖。`}
                 </Text>
                 <TextInput
                   autoCapitalize='none'
@@ -1001,15 +1041,6 @@ export default function PluginsScreen({colors, taskManager}: {colors: Colors; ta
                   placeholderTextColor={colors.muted}
                   style={[styles.manualInput, {borderColor: colors.border, color: colors.text}]}
                   value={gitBranch}
-                />
-                <TextInput
-                  autoCapitalize='none'
-                  autoCorrect={false}
-                  onChangeText={setGitCommit}
-                  placeholder='commit（可选，提交哈希或 ref）'
-                  placeholderTextColor={colors.muted}
-                  style={[styles.manualInput, {borderColor: colors.border, color: colors.text}]}
-                  value={gitCommit}
                 />
                 <TextInput
                   autoCapitalize='none'
@@ -1060,7 +1091,8 @@ export default function PluginsScreen({colors, taskManager}: {colors: Colors; ta
       <Modal
         animationType='slide'
         onRequestClose={() => {
-          if (installChoiceOpen || manualOpen) closeInstallSteps();
+          if (versionOpen) setVersionOpen(false);
+          else if (installChoiceOpen || manualOpen) closeInstallSteps();
           else closeDetail();
         }}
         transparent
@@ -1074,10 +1106,15 @@ export default function PluginsScreen({colors, taskManager}: {colors: Colors; ta
                 <Text numberOfLines={2} style={[styles.detailName, {color: colors.text}]}>
                   {detailPlugin?.name ?? ''}
                 </Text>
+                {detailPlugin && !detailPlugin.virtual ? (
+                  <Text style={[styles.tagText, {color: colors[pluginTypeMeta(detailPlugin).color]}]}>
+                    {pluginTypeMeta(detailPlugin).label}
+                  </Text>
+                ) : null}
                 <Text numberOfLines={2} style={[styles.detailDescription, {color: colors.muted}]}>
                   {detailPlugin?.virtual
                     ? `plugins/${APP_PLUGIN_DIR}，所有 app 类型插件共享这个目录`
-                    : detailPlugin?.description || '暂无描述'}
+                    : detailPlugin?.description?.trim() || '暂无描述'}
                 </Text>
               </View>
               <Pressable
@@ -1091,7 +1128,10 @@ export default function PluginsScreen({colors, taskManager}: {colors: Colors; ta
               {detailPlugin && !detailPlugin.virtual ? (
                 <Pressable
                   accessibilityRole='button'
+                  accessibilityState={{disabled: detailBusy, busy: detailBusy}}
+                  disabled={detailBusy}
                   onPress={() => {
+                    if (detailBusy) return;
                     const plugin = detailPlugin;
                     setDetailPlugin(null);
                     if (plugin.installed) requestRemove(plugin);
@@ -1103,6 +1143,7 @@ export default function PluginsScreen({colors, taskManager}: {colors: Colors; ta
                       backgroundColor: detailInstalled ? colors.neutralSoft : colors.accentSoft,
                       borderColor: detailInstalled ? colors.danger : colors.accent,
                     },
+                    detailBusy && styles.disabledAction,
                   ]}>
                   {detailInstalled ? (
                     <Trash2 color={colors.danger} size={14} />
@@ -1114,11 +1155,23 @@ export default function PluginsScreen({colors, taskManager}: {colors: Colors; ta
                   </Text>
                 </Pressable>
               ) : null}
+              {detailPlugin && canSwitchPluginVersion(detailPlugin) ? (
+                <Pressable
+                  accessibilityRole='button'
+                  accessibilityState={{disabled: detailBusy, busy: detailBusy}}
+                  disabled={detailBusy}
+                  onPress={() => { if (!detailBusy) setVersionOpen(true); }}
+                  style={[styles.detailLink, {borderColor: colors.border}, detailBusy && styles.disabledAction]}>
+                  <ArrowLeftRight color={colors.accent} size={14} />
+                  <Text style={[styles.detailLinkText, {color: colors.accent}]}>切换版本</Text>
+                </Pressable>
+              ) : null}
               {detailPlugin?.virtual ? (
                 <Pressable
                   accessibilityRole='button'
+                  disabled={detailBusy}
                   onPress={() => setInstallChoiceOpen(true)}
-                  style={[styles.detailLink, {backgroundColor: colors.accentSoft, borderColor: colors.accent}]}>
+                  style={[styles.detailLink, {backgroundColor: colors.accentSoft, borderColor: colors.accent}, detailBusy && styles.disabledAction]}>
                   <Download color={colors.accent} size={14} />
                   <Text style={[styles.detailLinkText, {color: colors.accent}]}>安装</Text>
                 </Pressable>
@@ -1126,12 +1179,13 @@ export default function PluginsScreen({colors, taskManager}: {colors: Colors; ta
               {detailPlugin?.virtual && appDirFiles.length ? (
                 <Pressable
                   accessibilityRole='button'
+                  disabled={detailBusy}
                   onPress={() => {
                     const plugin = detailPlugin;
                     setDetailPlugin(null);
                     requestRemove(plugin);
                   }}
-                  style={[styles.detailLink, {backgroundColor: colors.neutralSoft, borderColor: colors.danger}]}>
+                  style={[styles.detailLink, {backgroundColor: colors.neutralSoft, borderColor: colors.danger}, detailBusy && styles.disabledAction]}>
                   <Trash2 color={colors.danger} size={14} />
                   <Text style={[styles.detailLinkText, {color: colors.danger}]}>选择文件卸载</Text>
                 </Pressable>
@@ -1197,13 +1251,6 @@ export default function PluginsScreen({colors, taskManager}: {colors: Colors; ta
                   <ActivityIndicator color={colors.accent} size='small' />
                   <Text style={[styles.detailStateText, {color: colors.muted}]}>正在获取 README.md…</Text>
                 </View>
-              ) : detailState.status === 'local' ? (
-                <View style={styles.detailStateBox}>
-                  <Text style={[styles.detailStateText, {color: colors.text}]}>本地插件（未知来源）</Text>
-                  <Text style={[styles.appHint, {color: colors.muted}]}>
-                    {`插件市场里没有这个条目，它是从容器里的 ${detailPlugin ? pluginInstallPath(detailPlugin) : ''} 探测到的。git 插件没有 npm 上的 README 可看，可以直接卸载，卸载在设置页的依赖管理里也能做。`}
-                  </Text>
-                </View>
               ) : detailState.status === 'error' ? (
                 <View style={styles.detailStateBox}>
                   <Text style={[styles.detailStateText, {color: colors.danger}]}>获取 README.md 失败</Text>
@@ -1213,6 +1260,10 @@ export default function PluginsScreen({colors, taskManager}: {colors: Colors; ta
                     <RefreshCw color={colors.accent} size={13} />
                     <Text style={[styles.detailRetryText, {color: colors.accent}]}>重试</Text>
                   </Pressable>
+                </View>
+              ) : !detailState.details.readme.trim() ? (
+                <View style={styles.detailStateBox}>
+                  <Text style={[styles.detailStateText, {color: colors.muted}]}>暂无 README</Text>
                 </View>
               ) : (
                 <ScrollView contentContainerStyle={styles.readmeContent} nestedScrollEnabled>
@@ -1341,6 +1392,15 @@ export default function PluginsScreen({colors, taskManager}: {colors: Colors; ta
                 </View>
               </View>
             </View>
+          ) : null}
+          {versionOpen && detailPlugin ? (
+            <PluginVersionSheet
+              plugin={detailPlugin}
+              colors={colors}
+              busy={detailBusy}
+              onSelect={submitVersionChange}
+              onClose={() => setVersionOpen(false)}
+            />
           ) : null}
         </View>
       </Modal>
@@ -1499,6 +1559,10 @@ const styles = StyleSheet.create({
   filterWrap: {flexDirection: 'row', flexWrap: 'wrap', gap: 7, paddingHorizontal: 12, paddingBottom: 8},
   filterToggle: {height: 30, borderRadius: 15, borderWidth: 1, paddingHorizontal: 9, flexDirection: 'row', alignItems: 'center', gap: 4, marginBottom: 8},
   filterToggleText: {fontSize: 11, fontWeight: '700'},
+  warningBanner: {marginHorizontal: 12, marginBottom: 8, paddingHorizontal: 12, paddingVertical: 9, borderRadius: 10, borderWidth: 1, flexDirection: 'row', alignItems: 'center', gap: 9},
+  warningBannerCopy: {flex: 1, gap: 2},
+  warningBannerTitle: {fontSize: 12, fontWeight: '800'},
+  warningBannerText: {fontSize: 10},
   chip: {height: 30, borderRadius: 15, borderWidth: 1, paddingHorizontal: 10, flexDirection: 'row', alignItems: 'center', gap: 5},
   chipText: {fontSize: 12, fontWeight: '700'},
   chipCount: {fontSize: 10, fontWeight: '700', opacity: 0.75},

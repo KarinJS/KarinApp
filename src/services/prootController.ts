@@ -42,12 +42,13 @@ function clipTail(text: string, maxLines: number, maxChars: number): string {
 
 const DEFAULT_TIMEOUT_MS = 60_000;
 
-/** 流式执行容器内命令：每行输出回调 onLine，最后返回完整输出；超时则 kill 容器内进程并拒绝。 */
+/** 流式执行容器内命令；修改文件的任务可等待取消后的退出事件，避免清理完成前释放任务锁。 */
 export function executeStreaming(
   command: string,
   onLine: (line: string) => void,
   timeoutMs: number = DEFAULT_TIMEOUT_MS,
   signal?: AbortSignal,
+  options: {waitForExitOnAbort?: boolean} = {},
 ): Promise<string> {
   const commandId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
   return new Promise((resolve, reject) => {
@@ -58,6 +59,7 @@ export function executeStreaming(
     const state = {
       output: '',
       settled: false,
+      terminationError: undefined as Error | undefined,
       timer: undefined as ReturnType<typeof setTimeout> | undefined,
       subscription: undefined as EventSubscription | undefined,
       abortListener: undefined as (() => void) | undefined,
@@ -70,10 +72,25 @@ export function executeStreaming(
       state.subscription?.remove();
       callback();
     };
-    const terminate = (message: string) => finish(() => {
-      prootController.kill(commandId).catch(() => {});
-      reject(new Error(message));
-    });
+    const terminate = (message: string) => {
+      if (state.settled || state.terminationError) return;
+      if (!options.waitForExitOnAbort) {
+        finish(() => {
+          prootController.kill(commandId).catch(() => {});
+          reject(new Error(message));
+        });
+        return;
+      }
+      state.terminationError = new Error(message);
+      // kill 的 Promise 只表示已发出请求；真正退出以前保留事件监听与调用方的任务锁。
+      if (state.timer) clearTimeout(state.timer);
+      state.timer = undefined;
+      try {
+        prootController.kill(commandId).catch(error => finish(() => reject(error)));
+      } catch (error) {
+        finish(() => reject(error));
+      }
+    };
     if (signal) {
       state.abortListener = () => terminate('任务已终止');
       signal.addEventListener('abort', state.abortListener, {once: true});
@@ -87,7 +104,8 @@ export function executeStreaming(
       }
       if (event.stream === 'exit') {
         finish(() => {
-          if (event.exitCode === 0) resolve(state.output.trim());
+          if (state.terminationError) reject(state.terminationError);
+          else if (event.exitCode === 0) resolve(state.output.trim());
           else reject(new Error(`命令退出码 ${event.exitCode}${state.output.trim() ? `\n${clipTail(state.output, ERROR_TAIL_LINES, ERROR_TAIL_CHARS)}` : ''}`));
         });
       }
