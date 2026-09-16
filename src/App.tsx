@@ -1,7 +1,6 @@
 import React, {useEffect, useRef, useState} from 'react';
 import {ActivityIndicator, Alert, Pressable, StatusBar, StyleSheet, Text, View} from 'react-native';
 import {SafeAreaProvider, SafeAreaView} from 'react-native-safe-area-context';
-import {Power} from 'lucide-react-native';
 import BottomNav from './components/BottomNav';
 import ConfirmDialog from './components/ConfirmDialog';
 import RestartDialog from './components/RestartDialog';
@@ -263,11 +262,6 @@ export default function App() {
     }
   };
 
-  const powerButtonStyle = {
-    backgroundColor: karinRunning ? colors.powerActive : colors.surface,
-    borderColor: karinRunning ? colors.powerActiveBorder : colors.border,
-  };
-
   return (
     <SafeAreaProvider>
       <SafeAreaView style={[styles.safe, {backgroundColor: colors.background}]} edges={['top', 'bottom']}>
@@ -323,8 +317,10 @@ export default function App() {
                 <DashboardScreen
                   colors={colors}
                   karinRunning={karinRunning}
+                  karinBusy={karinBusy}
                   karinSeconds={karinSeconds}
                   memoryBytes={karinMemoryBytes}
+                  onToggleKarin={handleKarinToggle}
                   onOpenFiles={() => setFilesOpen(true)}
                   onOpenLogs={() => setTerminalOpen(true)}
                 />
@@ -344,24 +340,6 @@ export default function App() {
             </View>
 
             {notice ? <Toast message={notice} colors={colors} /> : null}
-
-            {activeTab === '控制台' && !filesOpen && !terminalOpen ? (
-              <Pressable
-                accessibilityRole="switch"
-                accessibilityState={{checked: karinRunning, disabled: karinBusy, busy: karinBusy}}
-                accessibilityLabel={karinRunning ? '停止 Karin' : '启动 Karin'}
-                disabled={karinBusy}
-                onPress={handleKarinToggle}
-                style={styles.switchGroup}>
-                <View style={[styles.karinSwitch, powerButtonStyle]}>
-                  {karinBusy ? (
-                    <ActivityIndicator size="small" color={karinRunning ? '#FFFFFF' : colors.muted} />
-                  ) : (
-                    <Power size={24} color={karinRunning ? '#FFFFFF' : colors.muted} strokeWidth={2.4} />
-                  )}
-                </View>
-              </Pressable>
-            ) : null}
 
             <BottomNav activeTab={activeTab} colors={colors} onSelect={tab => {
               if (backupBusy) return;
@@ -435,19 +413,5 @@ const styles = StyleSheet.create({
   statusButton: {height: 38, paddingHorizontal: 11, borderRadius: 19, borderWidth: 1, flexDirection: 'row', alignItems: 'center', gap: 7},
   statusText: {fontSize: 12, fontWeight: '700'},
   stateGlyph: {fontSize: 19, fontWeight: '900'},
-  switchGroup: {position: 'absolute', right: 20, bottom: 88, flexDirection: 'row', alignItems: 'center', gap: 9},
   resetOverlay: {position: 'absolute', top: 0, left: 0, right: 0, bottom: 0},
-  karinSwitch: {
-    width: 54,
-    height: 54,
-    borderRadius: 27,
-    borderWidth: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    elevation: 7,
-    shadowColor: '#000000',
-    shadowOpacity: 0.18,
-    shadowRadius: 7,
-    shadowOffset: {width: 0, height: 4},
-  },
 });

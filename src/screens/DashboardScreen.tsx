@@ -1,13 +1,15 @@
 import React from 'react';
-import {Platform, Pressable, ScrollView, StyleSheet, Text, View} from 'react-native';
-import {FolderOpen, MemoryStick, Smartphone, Terminal as TerminalIcon} from 'lucide-react-native';
+import {ActivityIndicator, Platform, Pressable, ScrollView, StyleSheet, Text, View} from 'react-native';
+import {FolderOpen, MemoryStick, Power, Smartphone, Terminal as TerminalIcon} from 'lucide-react-native';
 import {Colors} from '../theme/colors';
 
 type Props = {
   colors: Colors;
   karinRunning: boolean;
+  karinBusy: boolean;
   karinSeconds: number;
   memoryBytes: number;
+  onToggleKarin: () => void;
   onOpenFiles: () => void;
   onOpenLogs: () => void;
 };
@@ -20,7 +22,8 @@ function formatMemory(bytes: number): string {
   return `${(bytes / 1024 / 1024).toFixed(0)} MB`;
 }
 
-export default function DashboardScreen({colors, karinRunning, karinSeconds, memoryBytes, onOpenFiles, onOpenLogs}: Props) {
+export default function DashboardScreen({colors, karinRunning, karinBusy, karinSeconds, memoryBytes, onToggleKarin, onOpenFiles, onOpenLogs}: Props) {
+  const actionTextColor = karinRunning ? '#FFFFFF' : colors.text;
   return (
     <ScrollView contentContainerStyle={styles.dashboard}>
       <View style={[styles.statusRow, {backgroundColor: colors.surface, borderColor: colors.border}]}>
@@ -31,7 +34,30 @@ export default function DashboardScreen({colors, karinRunning, karinSeconds, mem
             {karinRunning ? runtimeLabel(karinSeconds) : '未运行'}
           </Text>
         </View>
-        <Text style={[styles.statusRowHint, {color: colors.muted}]}>右下角开关控制</Text>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityState={{disabled: karinBusy, busy: karinBusy}}
+          accessibilityLabel={karinRunning ? '停止 Karin' : '启动 Karin'}
+          disabled={karinBusy}
+          hitSlop={6}
+          onPress={onToggleKarin}
+          style={({pressed}) => [
+            styles.karinAction,
+            {
+              backgroundColor: karinRunning ? colors.accent : colors.surface,
+              borderColor: karinRunning ? colors.accent : colors.border,
+              opacity: karinBusy ? 0.65 : pressed ? 0.8 : 1,
+            },
+          ]}>
+          {karinBusy ? (
+            <ActivityIndicator size="small" color={karinRunning ? '#FFFFFF' : colors.accent} />
+          ) : (
+            <Power size={16} color={karinRunning ? '#FFFFFF' : colors.accent} strokeWidth={2.4} />
+          )}
+          <Text style={[styles.karinActionText, {color: actionTextColor}]}>
+            {karinRunning ? '停止' : '启动'}
+          </Text>
+        </Pressable>
       </View>
 
       <View style={styles.infoGrid}>
@@ -131,7 +157,8 @@ const styles = StyleSheet.create({
   statusDot: {width: 10, height: 10, borderRadius: 5, marginRight: 11},
   statusRowContent: {flex: 1},
   statusRowValue: {fontSize: 17, fontWeight: '800', marginTop: 3},
-  statusRowHint: {fontSize: 10},
+  karinAction: {minWidth: 74, height: 40, paddingHorizontal: 10, borderRadius: 10, borderWidth: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6},
+  karinActionText: {fontSize: 13, fontWeight: '800'},
   infoGrid: {flexDirection: 'row', gap: 8, marginTop: 8},
   infoCard: {flex: 1, minHeight: 102, borderRadius: 12, borderWidth: 1, padding: 11},
   infoIcon: {width: 26, height: 26, borderRadius: 8, alignItems: 'center', justifyContent: 'center', marginBottom: 8},
