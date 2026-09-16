@@ -1,7 +1,7 @@
 import {useEffect, useState} from 'react';
 import {karinService} from '../services/karinService';
 
-const POLL_INTERVAL_MS = 3_000;
+const POLL_INTERVAL_MS = 1_000;
 
 /**
  * Karin 进程真实状态：运行标记、运行秒数、内存占用（字节）。
@@ -20,13 +20,17 @@ export function useKarinRuntime(containerRunning: boolean) {
       return;
     }
     let cancelled = false;
+    let probing = false;
     const refresh = () => {
+      if (probing) return;
+      probing = true;
       karinService.probe().then(result => {
         if (cancelled) return;
+        if (result.ok === false) return;
         setRunning(result.running);
         setMemoryBytes(result.memoryBytes);
         if (!result.running) setSeconds(0);
-      });
+      }).finally(() => { probing = false; });
     };
     refresh();
     const timer = setInterval(refresh, POLL_INTERVAL_MS);
