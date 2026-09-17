@@ -5,6 +5,7 @@ import AboutScreen from './AboutScreen';
 import DependencyScreen from './DependencyScreen';
 import KeepAliveScreen from './KeepAliveScreen';
 import KarinBackupScreen from './KarinBackupScreen';
+import {useBottomNavInset} from '../hooks/useBottomNavInset';
 import {Colors} from '../theme/colors';
 import {executeAndCollect} from '../services/prootController';
 import {isValidGithubProxy, loadAppSettings, normalizeGithubProxy, saveGithubProxy} from '../services/appSettings';
@@ -33,6 +34,7 @@ type Props = {
 };
 
 export default function SettingsScreen({colors, version, onOpen, onResetProject, onResetContainer, onRefreshVersion, openBackup}: Props) {
+  const navInset = useBottomNavInset();
   const [registry, setRegistry] = useState<string>(REGISTRIES[0].url);
   const [registryOpen, setRegistryOpen] = useState(false);
   const [proxyInput, setProxyInput] = useState('');
@@ -100,23 +102,23 @@ export default function SettingsScreen({colors, version, onOpen, onResetProject,
     : REGISTRIES.find(item => normalizeRegistry(item.url) === currentRegistry)?.label ?? '自定义源';
 
   if (aboutOpen) {
-    return <AboutScreen colors={colors} karinVersion={version} onBack={() => setAboutOpen(false)} />;
+    return <View style={[styles.subpage, {marginBottom: navInset}]}><AboutScreen colors={colors} karinVersion={version} onBack={() => setAboutOpen(false)} /></View>;
   }
 
   if (keepAliveOpen) {
-    return <KeepAliveScreen colors={colors} onBack={() => setKeepAliveOpen(false)} />;
+    return <View style={[styles.subpage, {marginBottom: navInset}]}><KeepAliveScreen colors={colors} onBack={() => setKeepAliveOpen(false)} /></View>;
   }
 
   if (depsOpen) {
-    return <DependencyScreen colors={colors} onBack={() => setDepsOpen(false)} onDepsChanged={onRefreshVersion} />;
+    return <View style={[styles.subpage, {marginBottom: navInset}]}><DependencyScreen colors={colors} onBack={() => setDepsOpen(false)} onDepsChanged={onRefreshVersion} /></View>;
   }
 
   if (backupOpen) {
-    return <KarinBackupScreen colors={colors} onBack={() => setBackupOpen(false)} />;
+    return <View style={[styles.subpage, {marginBottom: navInset}]}><KarinBackupScreen colors={colors} onBack={() => setBackupOpen(false)} /></View>;
   }
 
   return (
-    <ScrollView contentContainerStyle={styles.content}>
+    <ScrollView contentContainerStyle={[styles.content, {paddingBottom: navInset + 28}]} scrollIndicatorInsets={{bottom: navInset}}>
       <Text style={[styles.intro, {color: colors.muted}]}>统一管理容器运行环境、Karin 版本与依赖</Text>
 
       <Text style={[styles.sectionTitle, styles.firstSectionTitle, {color: colors.muted}]}>运行环境</Text>
@@ -244,7 +246,8 @@ export default function SettingsScreen({colors, version, onOpen, onResetProject,
 }
 
 const styles = StyleSheet.create({
-  content: {paddingHorizontal: 16, paddingTop: 4, paddingBottom: 28},
+  subpage: {flex: 1},
+  content: {paddingHorizontal: 16, paddingTop: 4},
   intro: {fontSize: 12, lineHeight: 18, marginBottom: 12},
   sectionTitle: {fontSize: 12, fontWeight: '700', marginTop: 20, marginBottom: 8},
   /** 第一个分组标题紧跟顶部说明，不需要额外上边距 */

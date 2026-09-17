@@ -1,6 +1,7 @@
 import React from 'react';
 import {ActivityIndicator, Platform, Pressable, ScrollView, StyleSheet, Text, View} from 'react-native';
 import {FolderOpen, MemoryStick, Power, Smartphone, Terminal as TerminalIcon} from 'lucide-react-native';
+import {useBottomNavInset} from '../hooks/useBottomNavInset';
 import {Colors} from '../theme/colors';
 
 type Props = {
@@ -23,9 +24,10 @@ function formatMemory(bytes: number): string {
 }
 
 export default function DashboardScreen({colors, karinRunning, karinBusy, karinSeconds, memoryBytes, onToggleKarin, onOpenFiles, onOpenLogs}: Props) {
+  const navInset = useBottomNavInset();
   const actionTextColor = karinRunning ? '#FFFFFF' : colors.text;
   return (
-    <ScrollView contentContainerStyle={styles.dashboard}>
+    <ScrollView contentContainerStyle={[styles.dashboard, {paddingBottom: navInset + 24}]} scrollIndicatorInsets={{bottom: navInset}}>
       <View style={[styles.statusRow, {backgroundColor: colors.surface, borderColor: colors.border}]}>
         <View style={[styles.statusDot, {backgroundColor: karinRunning ? colors.success : colors.muted}]} />
         <View style={styles.statusRowContent}>
@@ -152,7 +154,7 @@ function Action({title, subtitle, icon, colors, onPress}: ActionProps) {
 }
 
 const styles = StyleSheet.create({
-  dashboard: {padding: 16, paddingTop: 4, paddingBottom: 104},
+  dashboard: {padding: 16, paddingTop: 4},
   statusRow: {borderRadius: 12, borderWidth: 1, padding: 13, flexDirection: 'row', alignItems: 'center'},
   statusDot: {width: 10, height: 10, borderRadius: 5, marginRight: 11},
   statusRowContent: {flex: 1},

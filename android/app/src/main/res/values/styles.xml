@@ -1,9 +1,13 @@
 <resources>
 
+    <bool name="light_navigation_bar">true</bool>
+
     <!-- Base application theme. -->
     <style name="AppTheme" parent="Theme.AppCompat.DayNight.NoActionBar">
         <!-- Customize your theme here. -->
         <item name="android:editTextBackground">@drawable/rn_edit_text_material</item>
+        <item name="android:enforceNavigationBarContrast">false</item>
+        <item name="android:windowLightNavigationBar">@bool/light_navigation_bar</item>
     </style>
 
 </resources>

@@ -8,6 +8,7 @@ import StartupScreen from './components/StartupScreen';
 import Toast from './components/Toast';
 import VersionSheet from './components/VersionSheet';
 import {useContainerStatus} from './hooks/useContainerStatus';
+import {useBottomNavInset} from './hooks/useBottomNavInset';
 import {useKarinRuntime} from './hooks/useKarinRuntime';
 import {useToast} from './hooks/useToast';
 import {usePluginTasks} from './hooks/usePluginTasks';
@@ -38,7 +39,16 @@ const INITIAL_STARTUP: StartupProgress = {
 };
 
 export default function App() {
+  return (
+    <SafeAreaProvider>
+      <AppContent />
+    </SafeAreaProvider>
+  );
+}
+
+function AppContent() {
   const {colors, dark} = useAppColors();
+  const navInset = useBottomNavInset();
   const {notice, showNotice} = useToast();
   const pluginTasks = usePluginTasks();
   const {containerState, setContainerState} = useContainerStatus();
@@ -263,8 +273,7 @@ export default function App() {
   };
 
   return (
-    <SafeAreaProvider>
-      <SafeAreaView style={[styles.safe, {backgroundColor: colors.background}]} edges={['top', 'bottom']}>
+      <SafeAreaView style={[styles.safe, {backgroundColor: colors.background}]} edges={startupDone ? ['top', 'left', 'right'] : ['top', 'bottom', 'left', 'right']}>
         <StatusBar barStyle={dark ? 'light-content' : 'dark-content'} />
 
         {!startupDone ? (
@@ -303,7 +312,14 @@ export default function App() {
               </View>
             </View>
 
-            <View style={styles.content}>
+            <View
+              nativeID="karin-tab-scene"
+              collapsable={false}
+              style={[
+                styles.content,
+                {backgroundColor: colors.background},
+                activeTab === '控制台' && (terminalOpen || filesOpen) && {paddingBottom: navInset},
+              ]}>
               {terminalOpen && activeTab === '控制台' ? (
                 <TerminalScreen
                   colors={colors}
@@ -339,9 +355,9 @@ export default function App() {
               )}
             </View>
 
-            {notice ? <Toast message={notice} colors={colors} /> : null}
+            {notice ? <Toast message={notice} colors={colors} bottomOffset={navInset + 80} /> : null}
 
-            <BottomNav activeTab={activeTab} colors={colors} onSelect={tab => {
+            <BottomNav activeTab={activeTab} colors={colors} dark={dark} disabled={backupBusy} onSelect={tab => {
               if (backupBusy) return;
               setFilesOpen(false); setTerminalOpen(false); setActiveTab(tab);
             }} />
@@ -399,7 +415,6 @@ export default function App() {
           onClose={() => setVersionOpen(false)}
         />
       </SafeAreaView>
-    </SafeAreaProvider>
   );
 }
 

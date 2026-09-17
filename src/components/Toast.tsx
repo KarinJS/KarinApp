@@ -1,6 +1,7 @@
 import React from 'react';
 import {StyleSheet, Text, View} from 'react-native';
 import {Colors} from '../theme/colors';
+import {BOTTOM_NAV_HEIGHT} from '../constants/navigation';
 
 type Props = {
   message: string;
@@ -10,7 +11,7 @@ type Props = {
 };
 
 /** 首页里 Toast 浮在底部导航上方的高度；子页面容器不含导航，按 BOTTOM_NAV_HEIGHT 换算后再传 */
-export const TOAST_BOTTOM_OFFSET = 152;
+export const TOAST_BOTTOM_OFFSET = BOTTOM_NAV_HEIGHT + 80;
 
 export default function Toast({message, colors, bottomOffset = TOAST_BOTTOM_OFFSET}: Props) {
   return (

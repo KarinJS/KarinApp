@@ -48,6 +48,7 @@ import ConfirmDialog from '../components/ConfirmDialog';
 import MarkdownView from '../components/MarkdownView';
 import {Colors} from '../theme/colors';
 import {loadAppSettings} from '../services/appSettings';
+import {useBottomNavInset} from '../hooks/useBottomNavInset';
 import type {usePluginTasks, PluginTaskKind} from '../hooks/usePluginTasks';
 import {canImportLocalAppPlugin, importLocalAppPlugin} from '../services/appPluginImport';
 import {importLocalPluginArchive} from '../services/pluginArchiveImport';
@@ -204,6 +205,7 @@ function FilterChip({
 
 export default function PluginsScreen({colors, taskManager}: {colors: Colors; taskManager: ReturnType<typeof usePluginTasks>}) {
   const insets = useSafeAreaInsets();
+  const navInset = useBottomNavInset();
   const [snapshot, setSnapshot] = useState<PluginSnapshot>({plugins: [], appDirFiles: []});
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -797,7 +799,8 @@ export default function PluginsScreen({colors, taskManager}: {colors: Colors; ta
         </View>
       ) : (
         <ScrollView
-          contentContainerStyle={styles.listContent}
+          contentContainerStyle={{paddingBottom: navInset + 96}}
+          scrollIndicatorInsets={{bottom: navInset}}
           keyboardDismissMode='on-drag'
           keyboardShouldPersistTaps='handled'
           refreshControl={
@@ -913,7 +916,7 @@ export default function PluginsScreen({colors, taskManager}: {colors: Colors; ta
         </ScrollView>
       )}
 
-      <DraggableFab badgeCount={taskList.length} warningCount={warningCount} colors={colors} onPress={() => setTasksOpen(true)} />
+      <DraggableFab badgeCount={taskList.length} warningCount={warningCount} colors={colors} bottomInset={navInset} onPress={() => setTasksOpen(true)} />
       <Modal animationType='slide' onRequestClose={() => setTasksOpen(false)} transparent visible={tasksOpen}>
         <View style={styles.overlay}>
           <Pressable onPress={() => setTasksOpen(false)} style={styles.overlayBackdrop} />
@@ -1566,7 +1569,6 @@ const styles = StyleSheet.create({
   chip: {height: 30, borderRadius: 15, borderWidth: 1, paddingHorizontal: 10, flexDirection: 'row', alignItems: 'center', gap: 5},
   chipText: {fontSize: 12, fontWeight: '700'},
   chipCount: {fontSize: 10, fontWeight: '700', opacity: 0.75},
-  listContent: {paddingBottom: 96},
   card: {
     marginHorizontal: 12,
     marginBottom: 8,

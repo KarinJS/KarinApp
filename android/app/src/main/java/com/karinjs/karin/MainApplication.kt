@@ -22,6 +22,7 @@ class MainApplication : Application(), ReactApplication {
           add(AppPluginImportPackage())
           add(KarinBackupPackage())
           add(KarinGitPackage())
+          add(KarinGlassPackage())
         },
     )
   }

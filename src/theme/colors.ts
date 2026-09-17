@@ -20,6 +20,9 @@ const lightColors = {
   toastText: '#FFFFFF',
   powerActive: '#FFD6E0',
   powerActiveBorder: '#FFB8C9',
+  glassTint: 'rgba(255, 250, 252, 0.72)',
+  glassSelected: 'rgba(251, 114, 153, 0.14)',
+  glassSelectedEdge: 'rgba(251, 114, 153, 0.20)',
 };
 
 const darkColors = {
@@ -42,6 +45,9 @@ const darkColors = {
   toastText: '#1A1216',
   powerActive: '#FFD6E0',
   powerActiveBorder: '#FFB8C9',
+  glassTint: 'rgba(37, 27, 32, 0.78)',
+  glassSelected: 'rgba(255, 133, 162, 0.18)',
+  glassSelectedEdge: 'rgba(255, 183, 202, 0.22)',
 };
 
 export type Colors = typeof lightColors;

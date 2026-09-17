@@ -7,6 +7,7 @@ type DraggableFabProps = {
   badgeCount: number;
   warningCount?: number;
   colors: Colors;
+  bottomInset?: number;
   onPress: () => void;
 };
 
@@ -16,7 +17,7 @@ const FAB_SIZE = 52;
 const FAB_MARGIN = 18;
 const DRAG_THRESHOLD = 8;
 
-export default function DraggableFab({badgeCount, warningCount = 0, colors, onPress}: DraggableFabProps) {
+export default function DraggableFab({badgeCount, warningCount = 0, colors, bottomInset = 0, onPress}: DraggableFabProps) {
   const translate = useRef(new Animated.ValueXY({x: 0, y: 0})).current;
   const layout = useRef({width: 0, height: 0});
   const position = useRef({x: 0, y: 0});
@@ -105,7 +106,7 @@ export default function DraggableFab({badgeCount, warningCount = 0, colors, onPr
   );
 
   return (
-    <View onLayout={handleLayout} pointerEvents="box-none" style={styles.layer}>
+    <View onLayout={handleLayout} pointerEvents="box-none" style={[styles.layer, {bottom: bottomInset}]}>
       <Animated.View
         accessibilityLabel={hasWarnings ? `插件任务，有 ${warningCount} 项警告` : `插件任务，共 ${badgeCount} 个`}
         accessibilityRole="button"
