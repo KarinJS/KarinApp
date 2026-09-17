@@ -11,8 +11,8 @@ const FILE_LINE_PATTERN = /^\[(\d{2}:\d{2}:\d{2}\.\d{3})\]\[([A-Z]{3,4})\]\s?([\
 const FILE_NAME_PATTERN = /^logger\.(\d{4}-\d{2}-\d{2})\.log$/;
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 
-/** 级别（%4.4p 截到 4 位）对应的前缀 ANSI 色号，与 karin web 端实时日志页一致。 */
-const LEVEL_FG: Record<string, number> = {TRAC: 34, DEBU: 36, INFO: 32, WARN: 33, ERRO: 31, FATA: 35, MARK: 90};
+/** 级别（%4.4p 截到 4 位）对应 AnsiStyle.fg 的调色板索引（0–15），不是 SGR 色码。 */
+const LEVEL_FG: Record<string, number> = {TRAC: 4, DEBU: 6, INFO: 2, WARN: 3, ERRO: 1, FATA: 5, MARK: 8};
 
 /** 设备本地日期（时区已同步进容器，两边一致）。 */
 export function todayLogDate(): string {
@@ -55,19 +55,12 @@ export async function readLogLines(date: string): Promise<string[]> {
  */
 export function startLogTail(date: string, onLine: (line: string) => void): () => void {
   const commandId = `karin-logtail-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-  // 输出帧可能在行中间切开，carry 把残行攒到下一个帧再拼出来。
-  let carry = '';
   const subscription: EventSubscription = prootController.subscribe(event => {
     if (event.commandId !== commandId) return;
     if (event.stream === 'stdout' && event.data) {
-      carry += event.data;
-      const parts = carry.split('\n');
-      carry = parts.pop() ?? '';
-      parts.forEach(onLine);
-    }
-    if (event.stream === 'exit' && carry) {
-      onLine(carry);
-      carry = '';
+      // karin-ipc 已按行切帧并去掉换行符，收到就交给 UI；tail -F 不会正常退出，
+      // 再等换行或 exit 才刷新，会让当天日志一直积压在内存里而不显示。
+      event.data.split('\n').forEach(line => onLine(line));
     }
   });
   prootController.execute(`tail -n ${TAIL_LINES} -F '${logFilePath(date)}' 2>/dev/null`, commandId).catch(() => {
