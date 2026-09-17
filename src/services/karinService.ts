@@ -7,7 +7,10 @@ type KarinProbeResult = {running: boolean; memoryBytes: number; ok: boolean};
 export const KARIN_COMMAND_ID = 'karin-service';
 const START_COMMAND = 'cd /root/karin && sh -c "echo \\$\\$ > /tmp/karin.pid; exec node index.mjs"';
 const PROBE_TIMEOUT_MS = 10_000;
-const STOP_TIMEOUT_MS = 8_000;
+/** 守护进程发给 node-karin 的 SIGTERM 宽限期，与 karin-ipc 的 GRACEFUL_EXIT_MS 保持一致。 */
+const STOP_GRACE_MS = 10_000;
+/** 宽限期之外再等退出事件的时间；只用于事件丢失时兜底，正常走不到。 */
+const STOP_FORCE_MS = 3_000;
 
 /**
  * 单行探针脚本，经 sh -c 执行：扫描 /proc，找到真正以 index.mjs 为参数的 Karin 主进程，
@@ -88,26 +91,33 @@ function sendInput(text: string): Promise<string> {
   return prootController.write(KARIN_COMMAND_ID, text.endsWith('\n') ? text : `${text}\n`);
 }
 
-function stop(): Promise<void> {
-  return new Promise(resolve => {
-    const state = {
-      settled: false,
-      timer: undefined as ReturnType<typeof setTimeout> | undefined,
-      subscription: undefined as EventSubscription | undefined,
-    };
+/**
+ * 优雅停止：发 KILL 帧后由容器内守护进程先给 node-karin 发 SIGTERM，让它自己走退出清理
+ * （未落盘的内容不丢），10 秒内还没退出才 SIGKILL。这里只等 exit 事件。
+ * 进程本来就不在时先 probe() 直接返回，不空等宽限期。
+ */
+async function stop(): Promise<void> {
+  if (!(await probe()).running) {
+    startedAt = null;
+    return;
+  }
+  await new Promise<void>(resolve => {
+    let settled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let subscription: EventSubscription | undefined;
     const finish = () => {
-      if (state.settled) return;
-      state.settled = true;
-      if (state.timer) clearTimeout(state.timer);
-      state.subscription?.remove();
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      subscription?.remove();
       startedAt = null;
       resolve();
     };
-    state.subscription = prootController.subscribe(event => {
+    subscription = prootController.subscribe(event => {
       if (event.commandId === KARIN_COMMAND_ID && event.stream === 'exit') finish();
     });
-    // 兜底：exit 事件丢失时不至于一直挂起
-    state.timer = setTimeout(finish, STOP_TIMEOUT_MS);
+    timer = setTimeout(finish, STOP_GRACE_MS + STOP_FORCE_MS);
+    // 容器没起来时 kill 会 reject：没有可停的进程，直接结束。
     prootController.kill(KARIN_COMMAND_ID).catch(() => finish());
   });
 }

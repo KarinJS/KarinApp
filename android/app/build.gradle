@@ -178,6 +178,9 @@ preBuild.dependsOn("buildIpcDaemon")
 // Build the JNI bridge separately from React Native's appmodules CMake project.
 // libgit2 is an Android library, never copied into the Debian guest.
 tasks.register("buildGitBridge") {
+    // packageProotLoader 把同一个 jniLibs/arm64-v8a 目录声明为输出，而本任务要读其中的
+    // libgit2.so，必须显式声明依赖，否则 Gradle 9 会报隐式依赖校验错误。
+    dependsOn("packageProotLoader")
     def src = file("src/main/cpp/karin-git.cpp")
     def includeDir = file("src/main/cpp/libgit2/include")
     def libraries = file("src/main/jniLibs/arm64-v8a")

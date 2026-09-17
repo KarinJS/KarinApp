@@ -6,8 +6,10 @@
  *   every frame: u32 payloadLen | payload
  *   App -> daemon:
  *     u8 type=1 EXEC: u16 idLen | id | u32 cmdLen | cmd | u8 flags(bit0 = keep stdin pipe)
- *     u8 type=2 KILL: u16 idLen | id
+ *     u8 type=2 KILL: u16 idLen | id (SIGTERM to the process group, escalated
+ *                      to SIGKILL only if the process outlives the grace period)
  *     u8 type=3 QUIT: none
+ *     u8 type=4 WRITE: u16 idLen | id | u32 dataLen | data
  *   daemon -> App:
  *     u8 type=1 OUT:  u16 idLen | id | u8 stream(1=stdout,2=stderr) | u32 dataLen | data
  *     u8 type=2 EXIT: u16 idLen | id | u32 code
@@ -34,6 +36,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/wait.h>
+#include <time.h>
 #include <unistd.h>
 
 /* ---- 1. protocol constants & child state ---- */
@@ -59,6 +62,8 @@
 #define READ_CHUNK 4096
 /* Queued stdin bytes per child; a child that stops reading must not grow this forever. */
 #define MAX_STDIN_BUFFER (256u * 1024u)
+/* 停止子进程的宽限期：先 SIGTERM 让 guest 自己收尾（落盘、断连接），到点还在的再 SIGKILL。 */
+#define GRACEFUL_EXIT_MS 10000
 
 /* One child output pipe (stdout or stderr) with its partial-line buffer. */
 typedef struct {
@@ -77,6 +82,7 @@ typedef struct {
   size_t in_len;
   size_t in_off;
   size_t in_cap;
+  int64_t kill_at_ms; /* SIGTERM 宽限期结束时刻；0 表示没有待升级的强杀 */
   pipe_t out; /* stdout */
   pipe_t err; /* stderr */
 } child_t;
@@ -402,13 +408,64 @@ fail:
   if (send_exit(id, (uint32_t)fail_code) < 0) mark_failed_send();
 }
 
+/* 宽限期计时用单调时钟，不受系统时间调整影响。 */
+static int64_t now_ms(void) {
+  struct timespec ts;
+  clock_gettime(CLOCK_MONOTONIC, &ts);
+  return (int64_t)ts.tv_sec * 1000 + (int64_t)(ts.tv_nsec / 1000000);
+}
+
+/* 释放子进程槽位；调用方必须已经 waitpid 成功，否则会漏掉僵尸进程。 */
+static void release_child(child_t *c) {
+  close_stdin(c);
+  free(c->id);
+  free(c->out.line);
+  free(c->err.line);
+  if (!c->out.done) close(c->out.fd);
+  if (!c->err.done) close(c->err.fd);
+  memset(c, 0, sizeof(*c));
+  g_child_count--;
+}
+
+/* 停止子进程：先 SIGTERM 让它自己收尾（落盘、断连接），宽限期内没退出才由
+ * escalate_stops() 补 SIGKILL。重复的停止请求不重置宽限计时。 */
+static void stop_child(child_t *c) {
+  if (!c->pid) return;
+  if (killpg(c->pid, SIGTERM) == 0 && c->kill_at_ms == 0) {
+    c->kill_at_ms = now_ms() + GRACEFUL_EXIT_MS;
+  }
+}
+
 static void kill_child(const char *id) {
   for (int i = 0; i < MAX_CHILDREN; i++) {
     child_t *c = &g_children[i];
     if (c->pid && strcmp(c->id, id) == 0) {
-      killpg(c->pid, SIGKILL);
+      stop_child(c);
       return;
     }
+  }
+}
+
+/* 宽限期到点的子进程强杀；主循环每轮都会调用。 */
+static void escalate_stops(void) {
+  int64_t now = now_ms();
+  for (int i = 0; i < MAX_CHILDREN; i++) {
+    child_t *c = &g_children[i];
+    if (!c->pid || c->kill_at_ms == 0 || now < c->kill_at_ms) continue;
+    c->kill_at_ms = 0;
+    killpg(c->pid, SIGKILL);
+  }
+}
+
+/* 退出收尾专用的回收：只 waitpid 收尸，不再向 App 发 EXIT 帧（连接可能已经断了）。 */
+static void reap_children_quiet(void) {
+  for (int i = 0; i < MAX_CHILDREN; i++) {
+    child_t *c = &g_children[i];
+    if (!c->pid) continue;
+    int status = 0;
+    pid_t r = waitpid(c->pid, &status, WNOHANG);
+    if (r != c->pid && !(r < 0 && errno == ECHILD)) continue;
+    release_child(c);
   }
 }
 
@@ -429,29 +486,58 @@ static int reap_children(void) {
                   : (WIFSIGNALED(status) ? 128 + WTERMSIG(status) : 1);
       if (send_exit(c->id, (uint32_t)code) < 0) return -1;
     }
-    close_stdin(c);
-    free(c->id);
-    free(c->out.line);
-    free(c->err.line);
-    memset(c, 0, sizeof(*c));
-    g_child_count--;
+    release_child(c);
   }
   return 0;
 }
 
+/* 收尾：先给所有子进程 SIGTERM，最多等 GRACEFUL_EXIT_MS；等待期间继续抽走
+ * stdout/stderr，否则写满管道的子进程会卡在 write 上退不出来。到点仍在的再 SIGKILL。
+ * 只在守护进程退出前调用，允许阻塞。 */
 static void shutdown_all(void) {
+  for (int i = 0; i < MAX_CHILDREN; i++) {
+    child_t *c = &g_children[i];
+    if (c->pid) killpg(c->pid, SIGTERM);
+  }
+  int64_t deadline = now_ms() + GRACEFUL_EXIT_MS;
+  while (g_child_count > 0) {
+    int64_t remaining = deadline - now_ms();
+    if (remaining <= 0) break;
+    reap_children_quiet();
+    if (g_child_count == 0) break;
+    struct pollfd fds[MAX_CHILDREN * 2];
+    pipe_t *pipes[MAX_CHILDREN * 2];
+    child_t *owners[MAX_CHILDREN * 2];
+    int streams[MAX_CHILDREN * 2];
+    nfds_t nfds = 0;
+    for (int i = 0; i < MAX_CHILDREN; i++) {
+      child_t *c = &g_children[i];
+      if (!c->pid) continue;
+      pipe_t *p[2] = {&c->out, &c->err};
+      for (int j = 0; j < 2; j++) {
+        if (p[j]->done) continue;
+        fds[nfds].fd = p[j]->fd;
+        fds[nfds].events = POLLIN;
+        fds[nfds].revents = 0;
+        owners[nfds] = c;
+        pipes[nfds] = p[j];
+        streams[nfds] = j == 0 ? STREAM_STDOUT : STREAM_STDERR;
+        nfds++;
+      }
+    }
+    int timeout = remaining > 100 ? 100 : (int)remaining;
+    if (poll(fds, nfds, timeout) > 0) {
+      for (nfds_t i = 0; i < nfds; i++) {
+        if (fds[i].revents) pump_fd(owners[i], pipes[i], streams[i]);
+      }
+    }
+  }
   for (int i = 0; i < MAX_CHILDREN; i++) {
     child_t *c = &g_children[i];
     if (!c->pid) continue;
     killpg(c->pid, SIGKILL);
     waitpid(c->pid, NULL, 0);
-    close_stdin(c);
-    free(c->id);
-    free(c->out.line);
-    free(c->err.line);
-    if (!c->out.done) close(c->out.fd);
-    if (!c->err.done) close(c->err.fd);
-    memset(c, 0, sizeof(*c));
+    release_child(c);
   }
 }
 
@@ -623,11 +709,22 @@ int main(void) {
         nfds++;
       }
     }
-    int r = poll(fds, nfds, 1000);
+    /* 有停止请求在宽限期里时提前醒来强杀，别让强杀多等一个轮询周期。 */
+    int timeout = 1000;
+    int64_t now = now_ms();
+    for (int i = 0; i < MAX_CHILDREN; i++) {
+      child_t *c = &g_children[i];
+      if (!c->pid || c->kill_at_ms == 0) continue;
+      int64_t remaining = c->kill_at_ms - now;
+      int ms = remaining <= 0 ? 0 : (remaining > 1000 ? 1000 : (int)remaining);
+      if (ms < timeout) timeout = ms;
+    }
+    int r = poll(fds, nfds, timeout);
     if (r < 0) {
       if (errno == EINTR) continue;
       break;
     }
+    escalate_stops();
     if (r == 0) continue;
     for (nfds_t i = 0; i < nfds; i++) {
       if (fds[i].revents == 0) continue;

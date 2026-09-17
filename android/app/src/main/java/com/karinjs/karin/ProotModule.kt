@@ -151,7 +151,10 @@ class ProotModule(private val context: ReactApplicationContext) : ReactContextBa
     }
   }
 
-  /** 终止容器内指定 commandId 的进程（发 KILL 帧，守护进程对整个进程组 killpg）。 */
+  /**
+   * 终止容器内指定 commandId 的进程（发 KILL 帧）。守护进程先给整个进程组 SIGTERM，
+   * 让程序自己落盘收尾，宽限期内还没退出才 SIGKILL；退出码正常是 143，卡死才是 137。
+   */
   @ReactMethod
   fun kill(commandId: String, promise: Promise) {
     val idBytes = commandId.toByteArray(Charsets.UTF_8)
@@ -355,7 +358,9 @@ class ProotModule(private val context: ReactApplicationContext) : ReactContextBa
 
   /**
    * 停止 keeper 进程（proot）。容器内守护进程的 stdin 就是 keeper 的 stdin 管道：关闭它会让
-   * 守护进程读到 EOF 后杀掉所有子进程并退出，proot 随之正常退出并回收 tracee；force 时不再等待。
+   * 守护进程读到 EOF 后先给所有子进程 SIGTERM、宽限期过后再强杀，然后自己退出，proot 随之
+   * 正常退出并回收 tracee；force 只跳过 QUIT 帧、不缩短宽限期——直接强杀 proot 会让它的
+   * tracee 变成孤儿进程，继续占着 rootfs。
    */
   private fun stopKeeper(force: Boolean) {
     val keeper: Process?
@@ -373,9 +378,9 @@ class ProotModule(private val context: ReactApplicationContext) : ReactContextBa
     if (!force) {
       runCatching { writer?.let { sendFrameLocked(it, FrameWriter().u8(IpcProtocol.REQ_QUIT).toByteArray()) } }
     }
-    // 关闭 stdin：即使 QUIT 帧丢失，守护进程读到 EOF 后也会杀掉子进程并退出。
+    // 关闭 stdin：即使 QUIT 帧丢失，守护进程读到 EOF 后也会走同一条优雅退出流程。
     runCatching { writer?.close() }
-    if (!force && keeper.waitFor(GRACEFUL_STOP_TIMEOUT_MS, TimeUnit.MILLISECONDS)) return
+    if (keeper.waitFor(GRACEFUL_STOP_TIMEOUT_MS, TimeUnit.MILLISECONDS)) return
     terminate(keeper)
     keeper.waitFor(FORCE_STOP_TIMEOUT_MS, TimeUnit.MILLISECONDS)
   }
@@ -412,8 +417,8 @@ class ProotModule(private val context: ReactApplicationContext) : ReactContextBa
   private fun detail(output: String) = if (output.isBlank()) "" else ": $output"
 
   private companion object {
-    /** 非强制停止时等待容器内进程自行退出的时间。 */
-    const val GRACEFUL_STOP_TIMEOUT_MS = 4000L
+    /** 等待容器内进程自行退出的时间；守护进程自己的宽限期是 10 秒，这里要留出余量。 */
+    const val GRACEFUL_STOP_TIMEOUT_MS = 12000L
     /** 强杀后等待进程退出的最长时间。 */
     const val FORCE_STOP_TIMEOUT_MS = 2000L
   }

@@ -24,6 +24,7 @@ export const prootController = {
   status: () => native.status(),
   execute: (command: string, commandId = `${Date.now()}`, interactive = false) =>
     native.execute(command, commandId, interactive),
+  /** 停止命令：守护进程先给进程组 SIGTERM 让它收尾，宽限期（10 秒）过后仍在的才 SIGKILL。 */
   kill: (commandId: string) => native.kill(commandId),
   /** 向以 interactive 方式启动的命令写入 stdin；仅该命令能收到。 */
   write: (commandId: string, data: string) => native.write(commandId, data),

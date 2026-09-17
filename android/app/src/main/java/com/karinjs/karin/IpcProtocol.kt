@@ -9,7 +9,7 @@ import java.io.ByteArrayOutputStream
  *   每帧: u32 payloadLen | payload
  *   App -> 守护进程:
  *     u8 type=1 EXEC: u16 idLen | id | u32 cmdLen | cmd | u8 flags(bit0=保留 stdin 管道)
- *     u8 type=2 KILL: u16 idLen | id
+ *     u8 type=2 KILL: u16 idLen | id（先 SIGTERM 进程组，超宽限期才升级 SIGKILL）
  *     u8 type=3 QUIT: 无
  *     u8 type=4 WRITE: u16 idLen | id | u32 dataLen | data
  *   守护进程 -> App:
