@@ -1,5 +1,15 @@
 # Changelog
 
+## [1.2.7](https://github.com/KarinJS/KarinApp/compare/v1.2.6...v1.2.7) (2026-09-17)
+
+
+### Bug Fixes
+
+* 修复停止运行强杀karin的问题 ([4c19951](https://github.com/KarinJS/KarinApp/commit/4c1995178feb2558c73295dea4ab9d397a33ca96))
+* 修复历史日志颜色失效，且无法查看今日日志的问题 ([c68b344](https://github.com/KarinJS/KarinApp/commit/c68b34424d5ee13fd04cf86fdd9cde343b4d4c53))
+* 修复无Git命令的问题 ([8f66ea4](https://github.com/KarinJS/KarinApp/commit/8f66ea4d073bda60822cdccd89bb5ec2c98863bd))
+* 底部导航栏改为液态玻璃 ([e446934](https://github.com/KarinJS/KarinApp/commit/e446934f435c6f10748735d9912184fd9938dcbb))
+
 ## [1.2.6](https://github.com/KarinJS/KarinApp/compare/v1.2.5...v1.2.6) (2026-09-16)
 
 
