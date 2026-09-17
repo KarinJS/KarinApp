@@ -13,3 +13,7 @@
 -keepclassmembers class rikka.shizuku.Shizuku {
     private static *** newProcess(...);
 }
+# JNI entry points and callbacks invoked from libkarin_git.
+-keep class com.karinjs.karin.KarinGitNative { *; }
+-keep interface com.karinjs.karin.KarinGitNative$Callback { *; }
+-keepclassmembers class * implements com.karinjs.karin.KarinGitNative$Callback { *; }

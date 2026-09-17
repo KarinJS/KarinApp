@@ -185,14 +185,12 @@ class KarinBackupModule(private val context: ReactApplicationContext) : ReactCon
       }
     }
   }.getOrDefault("")
-  private fun shellQuote(value:String):String = "'" + value.replace("'", "'\\''") + "'"
   private fun runGitPlugins(taskId:String, info:ReadableMap, overwrite:Boolean) {
     val raw = info.getString("gitPluginsJson") ?: "[]"
     val list = runCatching { JSONArray(raw) }.getOrElse { JSONArray() }
     if (list.length() == 0) return
-    val root = RootfsInstaller(context).ensureContainer()
-    val runtime = ProotRuntime(context)
-    runtime.prepareRuntime(root)
+    val git = KarinGitService(context)
+    git.requireAvailable()
     for (i in 0 until list.length()) {
       if (cancelledTasks.contains(taskId)) throw CancellationException("导入已取消")
       val item = list.optJSONObject(i) ?: continue
@@ -204,27 +202,24 @@ class KarinBackupModule(private val context: ReactApplicationContext) : ReactCon
         emitLog(taskId, "跳过无效 Git 插件记录: $rel")
         continue
       }
-      val existing = File(root, "root/karin/$rel")
+      val existing = git.resolveGuest("/root/karin/$rel")
       if (existing.exists() && !overwrite) {
         emitLog(taskId, "跳过重复 Git 插件: $rel")
         continue
       }
-      val command = buildString {
-        append("rm -rf ").append(shellQuote("/root/karin/$rel"))
-        append(" && mkdir -p ").append(shellQuote("/root/karin/plugins"))
-        append(" && git clone")
-        if (branch.isNotBlank()) append(" --branch ").append(shellQuote(branch))
-        append(' ').append(shellQuote(url)).append(' ').append(shellQuote("/root/karin/$rel"))
-        append(" && git -C ").append(shellQuote("/root/karin/$rel")).append(" checkout ").append(shellQuote(commit))
-      }
       emitLog(taskId, "正在克隆 Git 插件: $rel")
+      val operation = "backup-git-$taskId-$i"
       try {
-        val process = runtime.createGuestProcess(root, listOf("/bin/sh", "-c", command), true)
-        process.inputStream.bufferedReader().useLines { lines -> lines.forEach { if (it.isNotBlank()) emitLog(taskId, it) } }
-        val code = process.waitFor()
-        if (code != 0) emitLog(taskId, "Git 插件失败（退出码 $code）: $rel") else emitLog(taskId, "Git 插件完成: $rel")
+        git.reserveOperation(operation)
+        git.restore(url, "/root/karin/$rel", branch.takeIf { it.isNotBlank() }, commit, operation,
+          onProgress = { message -> emitLog(taskId, message) },
+          cancelled = { cancelledTasks.contains(taskId) })
+        emitLog(taskId, "Git 插件完成: $rel")
       } catch (error: Exception) {
+        if (cancelledTasks.contains(taskId)) throw CancellationException("导入已取消")
         emitLog(taskId, "Git 插件失败: $rel (${error.message ?: "未知错误"})")
+      } finally {
+        git.finishOperation(operation)
       }
     }
   }

@@ -21,6 +21,7 @@ class MainApplication : Application(), ReactApplication {
           add(UpdaterPackage())
           add(AppPluginImportPackage())
           add(KarinBackupPackage())
+          add(KarinGitPackage())
         },
     )
   }

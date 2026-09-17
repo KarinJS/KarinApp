@@ -3,6 +3,7 @@ import {proxiedUrl} from './appSettings';
 import {fetchPackageVersions} from './packageVersions';
 import {KARIN_DIR, Plugin, pluginInstallPath, pnpmCommand} from './pluginService';
 import {shellQuote} from '../utils/shell';
+import {gitService} from './gitService';
 
 export type PluginVersionEntry = {
   /** 切换时回传给 switchPluginVersion 的值：npm 是版本号，git 是完整提交哈希 */
@@ -45,16 +46,12 @@ const assertSwitchable = (plugin: Plugin) => {
   if (!canSwitchPluginVersion(plugin)) throw new Error(`${plugin.name} 的安装来源未知，不支持切换版本`);
 };
 
-const gitIn = (path: string) => `git -C ${shellQuote(path)}`;
-
 /**
  * 插件目录必须自带 .git。容器里有别的 git 仓库（比如 karin 本体）时，
  * 直接跑 git 会向上找到父仓库，把父仓库的历史和 HEAD 当成插件的。
  */
 const assertGitRepository = async (path: string) => {
-  const command = `if test -d ${shellQuote(`${path}/.git`)} || test -f ${shellQuote(`${path}/.git`)}; then echo yes; else echo no; fi`;
-  const output = await executeAndCollect(command, READ_TIMEOUT_MS);
-  if (output.trim() !== 'yes') throw new Error(`${path} 不是 git 仓库（缺少 .git），不能切换版本`);
+  if (!(await gitService.isRepository(path))) throw new Error(`${path} 不是 git 仓库（缺少 .git），不能切换版本`);
 };
 
 /** 已安装的 npm 版本：以 node_modules 里那份 package.json 为准，读不到返回空 */
@@ -98,19 +95,13 @@ const fetchNpmVersionList = async (plugin: Plugin, force: boolean): Promise<Plug
   };
 };
 
-const readGitLog = async (git: string): Promise<PluginVersionEntry[]> => {
-  const command = [
-    `${git} log -n ${GIT_LOG_LIMIT}`,
-    `--date=${shellQuote('format:%Y-%m-%d %H:%M')}`,
-    `--pretty=${shellQuote('format:%H%x1f%s%x1f%an%x1f%ad')}`,
-    '2>/dev/null || true',
-  ].join(' ');
-  const output = await executeAndCollect(command, READ_TIMEOUT_MS);
-  return output.split('\n').flatMap(line => {
-    const [hash = '', subject = '', author = '', date = ''] = line.trim().split('\x1f');
+const readGitLog = async (path: string): Promise<PluginVersionEntry[]> => {
+  const entries = await gitService.log(path, GIT_LOG_LIMIT);
+  return entries.flatMap(entry => {
+    const hash = entry.hash.trim();
     if (!GIT_COMMIT_RE.test(hash)) return [];
-    const description = [author.trim(), date.trim()].filter(Boolean).join(' · ');
-    return [{value: hash, label: subject.trim() || '（无提交说明）', description: description || undefined}];
+    const description = [entry.author.trim(), entry.date.trim()].filter(Boolean).join(' · ');
+    return [{value: hash, label: entry.subject.trim() || '（无提交说明）', description: description || undefined}];
   });
 };
 
@@ -118,18 +109,17 @@ const readGitLog = async (git: string): Promise<PluginVersionEntry[]> => {
  * 补齐历史：浅克隆只有最后一次提交，要换版本就得先把仓库补全。
  * 远程读不到不算失败——本地已有的提交照样能看能切，只提示一句。
  */
-const refreshGitHistory = async (git: string): Promise<string | undefined> => {
-  const remote = (await executeAndCollect(`${git} config --get remote.origin.url 2>/dev/null || true`, READ_TIMEOUT_MS)).trim();
+const refreshGitHistory = async (path: string, onLog?: (line: string) => void): Promise<string | undefined> => {
+  const remote = (await gitService.remoteUrl(path)).trim();
   if (!remote) return '插件目录没有配置远程仓库，只显示本地已有的提交。';
   /** GitHub 加速跟着 origin 走，后面的 fetch 才会带上加速前缀 */
   const proxied = proxiedUrl(remote);
   if (proxied !== remote) {
-    await executeAndCollect(`${git} remote set-url origin ${shellQuote(proxied)}`, READ_TIMEOUT_MS).catch(() => '');
+    await gitService.setRemoteUrl(path, proxied).catch(() => undefined);
   }
-  const shallowCommand = `${git} rev-parse --is-shallow-repository 2>/dev/null || echo false`;
-  const shallow = (await executeAndCollect(shallowCommand, READ_TIMEOUT_MS)).trim() === 'true';
+  const shallow = await gitService.isShallow(path);
   try {
-    await executeAndCollect(`${git} fetch ${shallow ? '--unshallow ' : ''}--prune origin`, FETCH_TIMEOUT_MS);
+    await gitService.fetch(path, {unshallow: shallow, prune: true, onLog, timeoutMs: FETCH_TIMEOUT_MS});
     return undefined;
   } catch (error) {
     const message = (error instanceof Error ? error.message : String(error)).replace(/\s+/g, ' ').trim().slice(0, 160);
@@ -139,11 +129,10 @@ const refreshGitHistory = async (git: string): Promise<string | undefined> => {
 
 const fetchGitVersionList = async (plugin: Plugin): Promise<PluginVersionList> => {
   const path = pluginInstallPath(plugin);
-  const git = gitIn(path);
   await assertGitRepository(path);
-  const current = (await executeAndCollect(`${git} rev-parse HEAD`, READ_TIMEOUT_MS)).trim();
-  const warning = await refreshGitHistory(git);
-  return {current, versions: await readGitLog(git), warning};
+  const current = (await gitService.head(path)).trim();
+  const warning = await refreshGitHistory(path);
+  return {current, versions: await readGitLog(path), warning};
 };
 
 /**
@@ -180,16 +169,15 @@ const switchGitVersion = async (
   const target = version.trim().toLowerCase();
   if (!GIT_COMMIT_RE.test(target)) throw new Error('请选择要切换的提交');
   const path = pluginInstallPath(plugin);
-  const git = gitIn(path);
   await assertGitRepository(path);
   /** 只看已跟踪文件的改动：插件目录里的 node_modules 等未跟踪文件不该拦住切换 */
-  const dirty = (await executeAndCollect(`${git} status --porcelain --untracked-files=no`, READ_TIMEOUT_MS)).trim();
-  if (dirty) {
-    const preview = dirty.split('\n').slice(0, 5).join('\n');
+  const status = await gitService.status(path);
+  if (status.dirty) {
+    const preview = status.output.split('\n').slice(0, 5).join('\n');
     throw new Error(`插件目录有未提交的改动，请先提交或撤销后再切换：\n${preview}`);
   }
   onLog(`${plugin.name} → 提交 ${target.slice(0, 8)}`);
-  await executeStreaming(`${git} checkout --detach ${shellQuote(target)}`, onLog, SWITCH_TIMEOUT_MS, signal);
+  await gitService.checkout(path, target, {onLog, signal, timeoutMs: SWITCH_TIMEOUT_MS});
   /** 换提交后按新那份 package.json 重装依赖，和安装时的收尾保持一致 */
   const install = `if test -f ${shellQuote(`${path}/package.json`)}; then cd ${shellQuote(path)} && pnpm i; fi`;
   await executeStreaming(install, onLog, SWITCH_TIMEOUT_MS, signal);

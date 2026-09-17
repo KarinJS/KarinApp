@@ -1,6 +1,7 @@
 import {executeAndCollect, executeStreaming} from './prootController';
 import {proxiedUrl} from './appSettings';
 import {shellQuote} from '../utils/shell';
+import {gitService} from './gitService';
 
 export type PluginType = 'npm' | 'git' | 'app';
 export type PluginInstallSource = 'npm' | 'git' | 'local';
@@ -497,7 +498,6 @@ const scanLocalPlugins = async (): Promise<LocalPlugin[]> => {
     `s=local`,
     `if test -d "$d/.git" || test -f "$d/.git"; then`,
     `s=git`,
-    `if command -v git >/dev/null 2>&1; then r=$(git -C "$d" config --get remote.origin.url 2>/dev/null); fi`,
     `fi`,
     `printf '%s\t%s\t%s\n' "$d" "$r" "$s"`,
     `done`,
@@ -510,12 +510,10 @@ const scanLocalPlugins = async (): Promise<LocalPlugin[]> => {
     'true',
   ].join('; ');
 
-  let output = '';
-  try {
-    output = await executeAndCollect(command);
-  } catch {
-    return [];
-  }
+  const [output, repositories] = await Promise.all([
+    executeAndCollect(command).catch(() => ''),
+    gitService.listRepositories().catch(() => []),
+  ]);
 
   const npmPrefix = `${nodeModules}/`;
   const pluginsPrefix = `${pluginsDir}/`;
@@ -551,6 +549,22 @@ const scanLocalPlugins = async (): Promise<LocalPlugin[]> => {
         installSource: source === 'git' ? 'git' : 'local',
         remote: remote.trim() || undefined,
       });
+    }
+  });
+  // 原生读取 Git 仓库状态不依赖 proot；容器停机时仍显示已经克隆的插件。
+  repositories.forEach(repository => {
+    try {
+      const name = repository.name;
+      if (!name || name === APP_PLUGIN_DIR || /^@[^/]+$/.test(name)) return;
+      pluginPath({name, type: 'git'});
+      found.set(`directory:${name}`, {
+        name,
+        type: 'git',
+        installSource: 'git',
+        remote: repository.remote.trim() || undefined,
+      });
+    } catch {
+      // 不接受不合法的原生路径或目录名。
     }
   });
   return [...found.values()];
@@ -720,24 +734,52 @@ export const pnpmCommand = (args: string) =>
 
 const npmInstallCommand = (plugin: Plugin) => pnpmCommand(`i ${shellQuote(plugin.name)}`);
 
-const gitInstallCommand = (plugin: Plugin) => {
+const installGitPlugin = async (
+  plugin: Plugin,
+  onLog: (line: string) => void,
+  signal: AbortSignal | undefined,
+  options: InstallOptions,
+) => {
   const repository = plugin.repo?.find(item => item.type !== 'npm' && item.url);
   if (!repository?.url) throw new Error('Git 插件缺少可用仓库地址');
   const path = pluginPath(plugin);
   const branch = repository.branch?.trim();
   validateGitRef(branch ?? '', '分支');
-  const branchArgument = branch ? ` --branch ${shellQuote(branch)}` : '';
-  /** 用户填了 GitHub 加速前缀时，clone/fetch 都走加速地址 */
+  /** 用户填了 GitHub 加速前缀时，clone/fetch 都走加速地址。 */
   const repositoryUrl = proxiedUrl(repository.url);
-  const git = `git -C ${shellQuote(path)}`;
-  const checkoutCommand = `${git} fetch --depth 1 -- origin ${shellQuote(branch || 'HEAD')} && ${git} reset --hard FETCH_HEAD`;
-  const cloneCommand = `git clone --depth 1${branchArgument} -- ${shellQuote(repositoryUrl)} ${shellQuote(path)}`;
-  return [
-    `command -v git >/dev/null 2>&1 || (apt-get update && apt-get install -y git)`,
-    `mkdir -p ${shellQuote(`${KARIN_DIR}/plugins`)}`,
-    `if test -d ${shellQuote(`${path}/.git`)}; then git -C ${shellQuote(path)} remote set-url origin ${shellQuote(repositoryUrl)} && ${checkoutCommand}; else rm -rf ${shellQuote(path)} && ${cloneCommand}; fi`,
-    `if test -f ${shellQuote(`${path}/package.json`)}; then cd ${shellQuote(path)} && pnpm i; fi`,
-  ].join(' && ');
+  if (signal?.aborted) throw new Error('任务已终止');
+  const state = await gitService.pathState(path);
+  if (!['missing', 'empty', 'occupied'].includes(state)) throw new Error('无法确认 Git 插件目标目录状态');
+  if (state === 'occupied') {
+    if (!options.onWarning) throw new Error(`${plugin.name} 已存在且不为空，请确认覆盖后重试`);
+    const accepted = await options.onWarning({
+      title: '插件已存在',
+      message: `${plugin.name} 已存在且不为空，是否覆盖？`,
+      confirmLabel: '是',
+      cancelLabel: '否',
+    });
+    if (!accepted) throw new Error('用户取消覆盖');
+  }
+  if (signal?.aborted) throw new Error('任务已终止');
+  if (state === 'occupied') {
+    await gitService.update(repositoryUrl, path, branch, {onLog, signal});
+  } else {
+    await gitService.clone(repositoryUrl, path, branch, {onLog, signal});
+  }
+  onLog('Git 仓库已就绪，正在安装插件依赖…');
+  try {
+    return await executeStreaming(
+      `if test -f ${shellQuote(`${path}/package.json`)}; then cd ${shellQuote(path)} && pnpm i; fi`,
+      onLog,
+      5 * 60 * 1000,
+      signal,
+      {waitForExitOnAbort: true},
+    );
+  } catch (error) {
+    if (signal?.aborted) throw error;
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`Git 仓库已克隆或更新，但插件依赖未安装完成。请确认容器运行后重试：\n${message}`);
+  }
 };
 
 /** app 插件的下载计划：目标文件名可以由用户选择改名 */
@@ -793,28 +835,8 @@ export const installPlugin = (
       return output;
     });
   }
-  const command = plugin.type === 'git' ? gitInstallCommand(plugin) : npmInstallCommand(plugin);
-  const run = async () => {
-    if (plugin.type === 'git') {
-      const path = pluginPath(plugin);
-      // 不掩盖读取失败；只有已确认不存在或为空时才可直接安装。
-      const probe = `if test -d ${shellQuote(path)}; then find ${shellQuote(path)} -mindepth 1 -maxdepth 1 -printf 'conflict\\n' -quit; elif test -e ${shellQuote(path)} || test -L ${shellQuote(path)}; then printf 'conflict\\n'; fi`;
-      const result = await executeStreaming(probe, () => {}, 10_000, signal);
-      if (result.trim() === 'conflict') {
-        if (!options.onWarning) throw new Error(`${plugin.name} 已存在且不为空，请确认覆盖后重试`);
-        const accepted = await options.onWarning({
-          title: '插件已存在',
-          message: `${plugin.name} 已存在且不为空，是否覆盖？`,
-          confirmLabel: '是',
-          cancelLabel: '否',
-        });
-        if (!accepted) throw new Error('用户取消覆盖');
-      }
-    }
-    if (signal?.aborted) throw new Error('任务已终止');
-    return executeStreaming(command, onLog, 5 * 60 * 1000, signal);
-  };
-  return run();
+  if (plugin.type === 'git') return installGitPlugin(plugin, onLog, signal, options);
+  return executeStreaming(npmInstallCommand(plugin), onLog, 5 * 60 * 1000, signal);
 };
 
 export const removePlugin = (

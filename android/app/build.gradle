@@ -175,6 +175,40 @@ tasks.register("buildIpcDaemon") {
 }
 preBuild.dependsOn("buildIpcDaemon")
 
+// Build the JNI bridge separately from React Native's appmodules CMake project.
+// libgit2 is an Android library, never copied into the Debian guest.
+tasks.register("buildGitBridge") {
+    def src = file("src/main/cpp/karin-git.cpp")
+    def includeDir = file("src/main/cpp/libgit2/include")
+    def libraries = file("src/main/jniLibs/arm64-v8a")
+    def gitLibrary = new File(libraries, "libgit2.so")
+    def out = new File(libraries, "libkarin_git.so")
+    inputs.file(src)
+    inputs.dir(includeDir)
+    inputs.file(gitLibrary)
+    outputs.file(out)
+    doLast {
+        if (!gitLibrary.isFile()) throw new GradleException("缺少 Android arm64 libgit2.so，请先运行 scripts/build-native-git.ps1（见 docs/native-git.md）")
+        def os = System.getProperty("os.name").toLowerCase()
+        def prebuilt = os.contains("windows") ? "windows-x86_64"
+                : os.contains("mac") ? "darwin-x86_64" : "linux-x86_64"
+        def ndkRoot = System.getenv("ANDROID_NDK_HOME") ?: new File(android.sdkDirectory, "ndk/${rootProject.ext.ndkVersion}")
+        def bin = new File(ndkRoot.toString(), "toolchains/llvm/prebuilt/${prebuilt}/bin")
+        def clang = new File(bin, "aarch64-linux-android24-clang++${os.contains('windows') ? '.cmd' : ''}")
+        def strip = new File(bin, "llvm-strip${os.contains('windows') ? '.exe' : ''}")
+        if (!clang.isFile()) throw new GradleException("找不到 NDK clang++: ${clang}")
+        def result = project.providers.exec {
+            commandLine clang, "-shared", "-fPIC", "-std=c++17", "-Os", "-Wall", "-Wextra", "-Werror",
+                    "-fvisibility=hidden", "-static-libstdc++", "-ffunction-sections", "-fdata-sections",
+                    "-Wl,--gc-sections", "-Wl,--exclude-libs,ALL", "-Wl,--no-undefined", "-Wl,-z,max-page-size=16384",
+                    "-Wl,-soname,libkarin_git.so", "-I${includeDir}", src, "-L${libraries}", "-lgit2", "-o", out
+        }.result.get()
+        if (result.exitValue != 0) throw new GradleException("Git JNI 编译失败（退出码 ${result.exitValue}）")
+        project.providers.exec { commandLine strip, "--strip-unneeded", out }.result.get().assertNormalExitValue()
+    }
+}
+preBuild.dependsOn("buildGitBridge")
+
 dependencies {
     // The version of react-native is set by the React Native Gradle Plugin
     implementation("com.facebook.react:react-android")
