@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.2.8](https://github.com/KarinJS/KarinApp/compare/v1.2.7...v1.2.8) (2026-09-18)
+
+
+### Bug Fixes
+
+* 优化tab滑动 ([f72e348](https://github.com/KarinJS/KarinApp/commit/f72e348ce86ec8f63b80d091e52e1fa547bfb870))
+
 ## [1.2.7](https://github.com/KarinJS/KarinApp/compare/v1.2.6...v1.2.7) (2026-09-17)
 
 
